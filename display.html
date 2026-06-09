@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Event Engine V2 | Display</title>
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body data-app="display">
+  <div class="app-shell">
+    <header class="page-header">
+      <p class="eyebrow">A2Z Event Platform</p>
+      <h1>Display Screen</h1>
+      <p class="page-copy">Shared public-facing display surface for gameplay, calls, and announcements.</p>
+    </header>
+
+    <main class="page-content">
+      <section class="card">
+        <h2>Display Page</h2>
+        <p>The display module is connected and ready for event-driven rendering in later slices.</p>
+        <div id="app-status" class="status-panel" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <h2>Planned Content Types</h2>
+        <ul class="simple-list">
+          <li>Trivia prompts and answer reveals</li>
+          <li>Bingo calls and board views</li>
+          <li>Raffle and announcement states</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    window.EVENT_ENGINE_FIREBASE_CONFIG = window.EVENT_ENGINE_FIREBASE_CONFIG || null;
+  </script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

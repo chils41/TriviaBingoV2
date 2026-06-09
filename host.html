@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Event Engine V2 | Host</title>
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body data-app="host">
+  <div class="app-shell">
+    <header class="page-header">
+      <p class="eyebrow">A2Z Event Platform</p>
+      <h1>Host Console</h1>
+      <p class="page-copy">Host controls will manage live event flow without touching admin-only privileges.</p>
+    </header>
+
+    <main class="page-content">
+      <section class="card">
+        <h2>Host Page</h2>
+        <p>This shell prepares page-level routing and host-only orchestration modules.</p>
+        <div id="app-status" class="status-panel" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <h2>Upcoming Areas</h2>
+        <ul class="simple-list">
+          <li>Live trivia controls</li>
+          <li>Bingo board control</li>
+          <li>Review visibility and display coordination</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    window.EVENT_ENGINE_FIREBASE_CONFIG = window.EVENT_ENGINE_FIREBASE_CONFIG || null;
+  </script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

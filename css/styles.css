@@ -173,6 +173,11 @@ h1 {
   font: inherit;
 }
 
+.form-textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
 .form-input:focus {
   outline: 2px solid rgba(15, 118, 110, 0.2);
   outline-offset: 2px;
@@ -222,7 +227,8 @@ h1 {
 .primary-button,
 .secondary-button,
 .hub-button,
-.text-link-button {
+.text-link-button,
+.button-link {
   border: 0;
   border-radius: 14px;
   font: inherit;
@@ -273,6 +279,13 @@ h1 {
   text-underline-offset: 0.15em;
 }
 
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .hub-grid {
   display: grid;
   gap: 12px;
@@ -302,6 +315,15 @@ h1 {
 .hub-panel h3,
 .hub-panel p {
   margin-bottom: 0;
+}
+
+.static-page-panel {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.static-page-content {
+  white-space: pre-wrap;
+  line-height: 1.7;
 }
 
 .role-gate,
@@ -334,6 +356,13 @@ h1 {
   justify-self: start;
 }
 
+.role-custom-content,
+.admin-sections,
+.review-links-grid {
+  display: grid;
+  gap: 16px;
+}
+
 .placeholder-grid {
   display: grid;
   gap: 12px;
@@ -354,6 +383,26 @@ h1 {
   margin-bottom: 0;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.admin-section h3,
+.review-link-title {
+  margin-bottom: 0;
+}
+
+.admin-page-button {
+  width: 100%;
+}
+
+.admin-meta,
+.review-link-note {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.review-link-card {
+  display: grid;
+  gap: 12px;
 }
 
 @media (min-width: 700px) {
@@ -391,6 +440,10 @@ h1 {
   }
 
   .hub-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-links-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

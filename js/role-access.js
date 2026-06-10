@@ -92,7 +92,15 @@ function renderLoadingState({ roleLabel }) {
   `;
 }
 
-function renderUnlockedState({ roleLabel, shellTitle, shellCopy, lockLabel, message, cards }) {
+function renderUnlockedState({ roleLabel, shellTitle, shellCopy, lockLabel, message, cards, hasCustomContent }) {
+  const contentMarkup = hasCustomContent
+    ? '<div class="role-custom-content" data-role-content></div>'
+    : `
+      <div class="placeholder-grid">
+        ${renderPlaceholderCards(cards)}
+      </div>
+    `;
+
   return `
     <section class="role-gate" data-role-state="unlocked">
       <div class="role-shell-header">
@@ -106,9 +114,7 @@ function renderUnlockedState({ roleLabel, shellTitle, shellCopy, lockLabel, mess
         </button>
       </div>
       ${renderNotice(message)}
-      <div class="placeholder-grid">
-        ${renderPlaceholderCards(cards)}
-      </div>
+      ${contentMarkup}
     </section>
   `;
 }
@@ -126,6 +132,7 @@ export async function initRoleProtectedPage({
   setupCopy,
   placeholderCards,
   onUnlock,
+  onRenderUnlocked,
 }) {
   const rootNode = document.querySelector(rootSelector);
   const roleLabel = formatRoleLabel(role);
@@ -190,7 +197,20 @@ export async function initRoleProtectedPage({
         lockLabel: `Lock ${roleLabel}`,
         message: uiState.message,
         cards: placeholderCards,
+        hasCustomContent: typeof onRenderUnlocked === "function",
       });
+
+      if (typeof onRenderUnlocked === "function") {
+        onRenderUnlocked({
+          rootNode,
+          contentNode: rootNode.querySelector("[data-role-content]"),
+          role,
+          roleLabel,
+          firebase,
+          state,
+        });
+      }
+
       return;
     }
 

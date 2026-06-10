@@ -114,6 +114,21 @@ export function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+export function isValidAbsoluteHttpUrl(value) {
+  const normalizedValue = normalizeTextInput(value);
+
+  if (!normalizedValue) {
+    return false;
+  }
+
+  try {
+    const parsedUrl = new URL(normalizedValue);
+    return parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:";
+  } catch (error) {
+    return false;
+  }
+}
+
 export function getPreferredName(fullName) {
   const normalizedName = normalizeTextInput(fullName);
 

@@ -4,12 +4,27 @@ import {
   escapeHtml,
   getOrCreateDeviceId,
   getPreferredName,
+  isValidAbsoluteHttpUrl,
   isValidEmail,
   normalizeEmailInput,
   normalizeTextInput,
 } from "./utils.js";
+import {
+  MISSING_STATIC_PAGE_MESSAGE,
+  REVIEW_LINK_DEFINITIONS,
+  STATIC_PAGE_DEFINITIONS,
+  hasStaticPageContent,
+  normalizeReviewLinks,
+  normalizeStaticPages,
+} from "./static-pages.js";
 
 const PLAYER_ROOT_SELECTOR = "#player-app";
+
+let unsubscribePagesListener = null;
+let unsubscribeReviewLinksListener = null;
+let activePlayerRoot = null;
+let activePlayerClickHandler = null;
+let activePlayerSubmitHandler = null;
 
 const HUB_PANELS = [
   {
@@ -17,44 +32,53 @@ const HUB_PANELS = [
     label: "Trivia",
     title: "Trivia",
     message: "Trivia is coming in the next slice.",
+    kind: "placeholder",
   },
   {
     id: "bingo",
     label: "Bingo",
     title: "Bingo",
     message: "Bingo is coming in the next slice.",
+    kind: "placeholder",
   },
   {
     id: "bottle-list",
     label: "Bottle List",
     title: "Bottle List",
     message: "Bottle List is coming in the next slice.",
+    kind: "placeholder",
   },
-  {
-    id: "faq",
-    label: "FAQ",
-    title: "FAQ",
-    message: "FAQ details are coming in the next slice.",
-  },
-  {
-    id: "mystery-info",
-    label: "Mystery Info",
-    title: "Mystery Info",
-    message: "Mystery Info is coming in the next slice.",
-  },
-  {
-    id: "rules-alerts",
-    label: "Rules & Alerts",
-    title: "Rules & Alerts",
-    message: "Rules and alerts are coming in the next slice.",
-  },
+  ...STATIC_PAGE_DEFINITIONS.map((pageDefinition) => ({
+    id: pageDefinition.hubPanelId,
+    label: pageDefinition.label,
+    title: pageDefinition.defaultTitle,
+    message: `${pageDefinition.label} is ready to view from Firebase content.`,
+    kind: "static-page",
+    pageKey: pageDefinition.key,
+  })),
   {
     id: "leave-review",
     label: "Leave Review",
     title: "Leave Review",
-    message: "Review links are coming in a later slice.",
+    message: "Choose a review destination when links have been configured for this event.",
+    kind: "review-links",
   },
 ];
+
+const DEFAULT_HUB_PANEL_ID = HUB_PANELS[0].id;
+
+function clearPlayerContentListeners() {
+  if (typeof unsubscribePagesListener === "function") {
+    unsubscribePagesListener();
+  }
+
+  if (typeof unsubscribeReviewLinksListener === "function") {
+    unsubscribeReviewLinksListener();
+  }
+
+  unsubscribePagesListener = null;
+  unsubscribeReviewLinksListener = null;
+}
 
 function getPlayerRecordPath(playerId) {
   return `players/${playerId}`;
@@ -74,6 +98,14 @@ function normalizePlayerRecord(playerRecord, fallbackValues) {
 
 function getHubPanel(panelId) {
   return HUB_PANELS.find((panel) => panel.id === panelId) || HUB_PANELS[0];
+}
+
+function isStaticPagePanel(panel) {
+  return panel?.kind === "static-page";
+}
+
+function isReviewLinksPanel(panel) {
+  return panel?.kind === "review-links";
 }
 
 function renderPlayerMessage(playerMessage) {
@@ -158,12 +190,53 @@ function renderCheckInForm({ canSave, isEditing }) {
   `;
 }
 
-function renderHub(playerState) {
+function renderHubSummary(activePanel) {
+  return `
+    <section class="hub-panel" aria-live="polite">
+      <h3>${escapeHtml(activePanel.title)}</h3>
+      <p>${escapeHtml(activePanel.message)}</p>
+    </section>
+  `;
+}
+
+function renderStaticPageDetail() {
+  return `
+    <section class="player-section">
+      <div class="player-section-header">
+        <div>
+          <p class="eyebrow">Event Hub</p>
+          <h2 data-static-page-title></h2>
+        </div>
+        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
+      </div>
+      <div class="hub-panel static-page-panel">
+        <p class="static-page-content" data-static-page-content></p>
+      </div>
+    </section>
+  `;
+}
+
+function renderReviewDetail() {
+  return `
+    <section class="player-section">
+      <div class="player-section-header">
+        <div>
+          <p class="eyebrow">Event Hub</p>
+          <h2>Leave Review</h2>
+          <p class="player-copy">Choose the review destination you want to use. Unavailable links stay disabled until Admin posts them.</p>
+        </div>
+        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
+      </div>
+      <div class="review-links-grid" data-review-actions></div>
+    </section>
+  `;
+}
+
+function renderHub(playerState, playerUiState) {
   const currentState = playerState.getState();
   const currentPlayer = currentState.currentPlayer;
   const activePanel = getHubPanel(currentState.activeHubPanel);
   const hubButtonsMarkup = HUB_PANELS
-    .filter((panel) => panel.id !== "leave-review" || currentState.reviewVisible)
     .map((panel) => `
       <button
         type="button"
@@ -176,6 +249,14 @@ function renderHub(playerState) {
       </button>
     `)
     .join("");
+
+  if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
+    return renderStaticPageDetail();
+  }
+
+  if (playerUiState.isViewingHubDetail && isReviewLinksPanel(activePanel)) {
+    return renderReviewDetail();
+  }
 
   return `
     <section class="player-section">
@@ -190,12 +271,99 @@ function renderHub(playerState) {
       <div class="hub-grid">
         ${hubButtonsMarkup}
       </div>
-      <section class="hub-panel" aria-live="polite">
-        <h3>${activePanel.title}</h3>
-        <p>${activePanel.message}</p>
-      </section>
+      ${renderHubSummary(activePanel)}
     </section>
   `;
+}
+
+function renderReviewActions(reviewActionsNode, reviewLinks) {
+  if (!reviewActionsNode) {
+    return;
+  }
+
+  reviewActionsNode.innerHTML = "";
+
+  REVIEW_LINK_DEFINITIONS.forEach((linkDefinition, index) => {
+    const reviewLinkWrapper = document.createElement("article");
+    const reviewLinkHeading = document.createElement("h3");
+    const reviewLinkDescription = document.createElement("p");
+    const reviewLinkUrl = reviewLinks[linkDefinition.key];
+    const isLinkAvailable = isValidAbsoluteHttpUrl(reviewLinkUrl);
+
+    reviewLinkWrapper.className = "hub-panel review-link-card";
+    reviewLinkHeading.className = "review-link-title";
+    reviewLinkHeading.textContent = linkDefinition.label;
+    reviewLinkDescription.className = "review-link-note";
+
+    if (isLinkAvailable) {
+      const reviewLinkButton = document.createElement("a");
+
+      reviewLinkButton.className = `${index === 0 ? "primary-button" : "secondary-button"} button-link`;
+      reviewLinkButton.href = reviewLinkUrl;
+      reviewLinkButton.target = "_blank";
+      reviewLinkButton.rel = "noopener noreferrer";
+      reviewLinkButton.textContent = `Open ${linkDefinition.label}`;
+      reviewLinkDescription.textContent = "Opens in a new tab.";
+      reviewLinkWrapper.append(reviewLinkHeading, reviewLinkButton, reviewLinkDescription);
+    } else {
+      const unavailableButton = document.createElement("button");
+
+      unavailableButton.type = "button";
+      unavailableButton.className = "secondary-button";
+      unavailableButton.disabled = true;
+      unavailableButton.textContent = `${linkDefinition.label} Unavailable`;
+      reviewLinkDescription.textContent = "This review link has not been posted yet.";
+      reviewLinkWrapper.append(reviewLinkHeading, unavailableButton, reviewLinkDescription);
+    }
+
+    reviewActionsNode.append(reviewLinkWrapper);
+  });
+}
+
+function populateDynamicHubContent({ playerRoot, state, playerUiState }) {
+  const currentState = state.getState();
+  const currentPlayer = currentState.currentPlayer;
+  const activePanel = getHubPanel(currentState.activeHubPanel);
+  const checkInForm = playerRoot.querySelector("#player-checkin-form");
+
+  if (checkInForm instanceof HTMLFormElement) {
+    const nameField = checkInForm.elements.namedItem("name");
+    const zipField = checkInForm.elements.namedItem("zip");
+    const emailField = checkInForm.elements.namedItem("email");
+    const playerRecord = currentPlayer || {};
+
+    if (nameField instanceof HTMLInputElement) {
+      nameField.value = playerRecord.name || "";
+    }
+
+    if (zipField instanceof HTMLInputElement) {
+      zipField.value = playerRecord.zip || "";
+    }
+
+    if (emailField instanceof HTMLInputElement) {
+      emailField.value = playerRecord.email || "";
+    }
+  }
+
+  if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
+    const staticPage = playerUiState.staticPages[activePanel.pageKey];
+    const titleNode = playerRoot.querySelector("[data-static-page-title]");
+    const contentNode = playerRoot.querySelector("[data-static-page-content]");
+
+    if (titleNode) {
+      titleNode.textContent = staticPage.title;
+    }
+
+    if (contentNode) {
+      contentNode.textContent = hasStaticPageContent(staticPage)
+        ? staticPage.content
+        : MISSING_STATIC_PAGE_MESSAGE;
+    }
+  }
+
+  if (playerUiState.isViewingHubDetail && isReviewLinksPanel(activePanel)) {
+    renderReviewActions(playerRoot.querySelector("[data-review-actions]"), playerUiState.reviewLinks);
+  }
 }
 
 export async function initPlayerPage({ firebase, state, renderStatus }) {
@@ -203,6 +371,8 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   initBingoModule({ firebase, state, role: "player" });
 
   const playerRoot = document.querySelector(PLAYER_ROOT_SELECTOR);
+
+  clearPlayerContentListeners();
 
   if (!playerRoot) {
     const missingRootMessage = "Player app container is missing from index.html.";
@@ -217,10 +387,13 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     ageGateDeclined: false,
     isEditingCheckIn: false,
     isSubmitting: false,
+    isViewingHubDetail: false,
     playerMessage: {
       text: "",
       tone: "info",
     },
+    staticPages: normalizeStaticPages(null),
+    reviewLinks: normalizeReviewLinks(null),
   };
 
   function setPlayerMessage(text = "", tone = "info") {
@@ -233,7 +406,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     let viewMarkup = "";
 
     if (currentPlayer && !playerUiState.isEditingCheckIn) {
-      viewMarkup = renderHub(state);
+      viewMarkup = renderHub(state, playerUiState);
     } else if (currentState.hasPassedAgeGate) {
       viewMarkup = renderCheckInForm({
         canSave: firebase.getStatus().isConnected && !playerUiState.isSubmitting,
@@ -252,26 +425,29 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       </div>
     `;
 
-    const checkInForm = playerRoot.querySelector("#player-checkin-form");
+    populateDynamicHubContent({ playerRoot, state, playerUiState });
+  }
 
-    if (checkInForm) {
-      const nameField = checkInForm.elements.namedItem("name");
-      const zipField = checkInForm.elements.namedItem("zip");
-      const emailField = checkInForm.elements.namedItem("email");
-      const playerRecord = currentPlayer || {};
+  function attachRealtimeContentListeners() {
+    clearPlayerContentListeners();
 
-      if (nameField instanceof HTMLInputElement) {
-        nameField.value = playerRecord.name || "";
+    unsubscribePagesListener = firebase.listenEventData("pages", (pagesValue, listenerStatus) => {
+      if (!listenerStatus.ok) {
+        return;
       }
 
-      if (zipField instanceof HTMLInputElement) {
-        zipField.value = playerRecord.zip || "";
+      playerUiState.staticPages = normalizeStaticPages(pagesValue);
+      renderPlayerView();
+    });
+
+    unsubscribeReviewLinksListener = firebase.listenEventData("reviewLinks", (reviewLinksValue, listenerStatus) => {
+      if (!listenerStatus.ok) {
+        return;
       }
 
-      if (emailField instanceof HTMLInputElement) {
-        emailField.value = playerRecord.email || "";
-      }
-    }
+      playerUiState.reviewLinks = normalizeReviewLinks(reviewLinksValue);
+      renderPlayerView();
+    });
   }
 
   async function restoreExistingPlayer() {
@@ -296,7 +472,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
         eventId: state.getState().eventId,
       }),
       hasPassedAgeGate: true,
-      activeHubPanel: state.getState().activeHubPanel || HUB_PANELS[0].id,
+      activeHubPanel: state.getState().activeHubPanel || DEFAULT_HUB_PANEL_ID,
     });
   }
 
@@ -316,7 +492,15 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     return "";
   }
 
-  playerRoot.addEventListener("click", (event) => {
+  if (activePlayerRoot && activePlayerClickHandler) {
+    activePlayerRoot.removeEventListener("click", activePlayerClickHandler);
+  }
+
+  if (activePlayerRoot && activePlayerSubmitHandler) {
+    activePlayerRoot.removeEventListener("submit", activePlayerSubmitHandler);
+  }
+
+  activePlayerClickHandler = (event) => {
     const actionNode = event.target.closest("[data-action]");
 
     if (!actionNode) {
@@ -349,13 +533,24 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     }
 
     if (action === "open-hub-panel") {
-      state.patch({ activeHubPanel: actionNode.dataset.panelId || HUB_PANELS[0].id });
+      const nextPanel = getHubPanel(actionNode.dataset.panelId || DEFAULT_HUB_PANEL_ID);
+
+      playerUiState.isViewingHubDetail = isStaticPagePanel(nextPanel) || isReviewLinksPanel(nextPanel);
+      state.patch({ activeHubPanel: nextPanel.id });
+      renderPlayerView();
+      return;
+    }
+
+    if (action === "back-to-hub") {
+      playerUiState.isViewingHubDetail = false;
+      state.patch({ activeHubPanel: DEFAULT_HUB_PANEL_ID });
       renderPlayerView();
       return;
     }
 
     if (action === "edit-check-in") {
       playerUiState.isEditingCheckIn = true;
+      playerUiState.isViewingHubDetail = false;
       setPlayerMessage();
       renderPlayerView();
       return;
@@ -366,9 +561,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       setPlayerMessage();
       renderPlayerView();
     }
-  });
+  };
 
-  playerRoot.addEventListener("submit", async (event) => {
+  activePlayerSubmitHandler = async (event) => {
     const formNode = event.target;
 
     if (!(formNode instanceof HTMLFormElement) || formNode.id !== "player-checkin-form") {
@@ -425,19 +620,26 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       currentPlayer: playerPayload,
       deviceId: playerId,
       hasPassedAgeGate: true,
-      activeHubPanel: currentState.activeHubPanel || HUB_PANELS[0].id,
+      activeHubPanel: currentState.activeHubPanel || DEFAULT_HUB_PANEL_ID,
     });
 
     playerUiState.ageGateDeclined = false;
     playerUiState.isEditingCheckIn = false;
+    playerUiState.isViewingHubDetail = false;
     setPlayerMessage(
       currentState.currentPlayer ? "Your check-in details were updated." : "You are checked in and ready for the Event Hub.",
       "success"
     );
     renderPlayerView();
-  });
+  };
 
+  playerRoot.addEventListener("click", activePlayerClickHandler);
+  playerRoot.addEventListener("submit", activePlayerSubmitHandler);
+  activePlayerRoot = playerRoot;
+
+  attachRealtimeContentListeners();
   renderPlayerView();
+
   const restorePlayerPromise = restoreExistingPlayer()
     .then(() => {
       renderPlayerView();
@@ -455,8 +657,8 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   ]);
 
   const firebaseMessage = firebase.isConfigured
-    ? "Player check-in flow is ready for Firebase-backed attendance."
-    : "Player check-in is loaded, but a live Firebase connection is required before guests can save check-in.";
+    ? "Player check-in and Event Hub content are ready for Firebase-backed attendance and realtime updates."
+    : "Player check-in is loaded, but a live Firebase connection is required before guests can save check-in or receive event content.";
 
   renderStatus(firebaseMessage, firebase.isConfigured ? "info" : "warning");
 

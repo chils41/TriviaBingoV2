@@ -1,6 +1,13 @@
 import { initTriviaModule } from "./trivia.js";
 import { initBingoModule } from "./bingo.js";
 import {
+  DEFAULT_PUBLIC_BOTTLE_LIST_TITLE,
+  hasBottleListItems,
+  normalizeBottleList,
+  PLAYER_EMPTY_BOTTLE_LIST_MESSAGE,
+  PUBLIC_BOTTLE_LIST_PATH,
+} from "./bottle-list.js";
+import {
   escapeHtml,
   getOrCreateDeviceId,
   getPreferredName,
@@ -22,6 +29,7 @@ const PLAYER_ROOT_SELECTOR = "#player-app";
 
 let unsubscribePagesListener = null;
 let unsubscribeReviewLinksListener = null;
+let unsubscribeBottleListListener = null;
 let activePlayerRoot = null;
 let activePlayerClickHandler = null;
 let activePlayerSubmitHandler = null;
@@ -45,8 +53,8 @@ const HUB_PANELS = [
     id: "bottle-list",
     label: "Bottle List",
     title: "Bottle List",
-    message: "Bottle List is coming in the next slice.",
-    kind: "placeholder",
+    message: "View the posted public bottle list for this event.",
+    kind: "bottle-list",
   },
   ...STATIC_PAGE_DEFINITIONS.map((pageDefinition) => ({
     id: pageDefinition.hubPanelId,
@@ -76,8 +84,13 @@ function clearPlayerContentListeners() {
     unsubscribeReviewLinksListener();
   }
 
+  if (typeof unsubscribeBottleListListener === "function") {
+    unsubscribeBottleListListener();
+  }
+
   unsubscribePagesListener = null;
   unsubscribeReviewLinksListener = null;
+  unsubscribeBottleListListener = null;
 }
 
 function getPlayerRecordPath(playerId) {
@@ -106,6 +119,10 @@ function isStaticPagePanel(panel) {
 
 function isReviewLinksPanel(panel) {
   return panel?.kind === "review-links";
+}
+
+function isBottleListPanel(panel) {
+  return panel?.kind === "bottle-list";
 }
 
 function renderPlayerMessage(playerMessage) {
@@ -232,6 +249,146 @@ function renderReviewDetail() {
   `;
 }
 
+function renderBottleListDetail() {
+  return `
+    <section class="player-section">
+      <div class="player-section-header">
+        <div>
+          <p class="eyebrow">Event Hub</p>
+          <h2 data-bottle-list-title></h2>
+          <p class="player-copy">Public raffle or event bottle list only. This page remains separate from Bingo.</p>
+        </div>
+        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
+      </div>
+      <div class="bottle-list-detail">
+        <div data-bottle-list-status></div>
+        <div class="bottle-list-group-grid" data-bottle-list-groups></div>
+      </div>
+    </section>
+  `;
+}
+
+function createBottleListNotice(message, tone) {
+  const noticeNode = document.createElement("div");
+
+  noticeNode.className = "player-note";
+  noticeNode.dataset.tone = tone;
+  noticeNode.textContent = message;
+  return noticeNode;
+}
+
+function renderBottleListGroups(groupsNode, bottleList) {
+  if (!groupsNode) {
+    return;
+  }
+
+  groupsNode.innerHTML = "";
+
+  bottleList.groups.forEach((group) => {
+    const groupNode = document.createElement("article");
+    const titleNode = document.createElement("h3");
+    const tableWrapNode = document.createElement("div");
+    const tableNode = document.createElement("table");
+    const tableHeadNode = document.createElement("thead");
+    const headerRowNode = document.createElement("tr");
+    const bottleHeaderNode = document.createElement("th");
+    const quantityHeaderNode = document.createElement("th");
+    const priceHeaderNode = document.createElement("th");
+    const tableBodyNode = document.createElement("tbody");
+
+    groupNode.className = "hub-panel bottle-list-group";
+    titleNode.textContent = group.title;
+    tableWrapNode.className = "bottle-list-table-wrap";
+    tableNode.className = "bottle-list-table";
+    bottleHeaderNode.scope = "col";
+    bottleHeaderNode.textContent = "Bottle";
+    quantityHeaderNode.scope = "col";
+    quantityHeaderNode.textContent = "Qty";
+    priceHeaderNode.scope = "col";
+    priceHeaderNode.textContent = "Price";
+    headerRowNode.append(bottleHeaderNode, quantityHeaderNode, priceHeaderNode);
+    tableHeadNode.append(headerRowNode);
+
+    group.items.forEach((item) => {
+      const itemRowNode = document.createElement("tr");
+      const nameNode = document.createElement("td");
+      const quantityNode = document.createElement("td");
+      const priceNode = document.createElement("td");
+
+      nameNode.dataset.label = "Bottle";
+      nameNode.textContent = item.name;
+      quantityNode.dataset.label = "Qty";
+      quantityNode.textContent = String(item.quantity);
+      priceNode.dataset.label = "Price";
+      priceNode.textContent = item.price;
+      itemRowNode.append(nameNode, quantityNode, priceNode);
+      tableBodyNode.append(itemRowNode);
+    });
+
+    tableNode.append(tableHeadNode, tableBodyNode);
+    tableWrapNode.append(tableNode);
+    groupNode.append(titleNode, tableWrapNode);
+    groupsNode.append(groupNode);
+  });
+}
+
+function renderBottleListDetailContent(playerRoot, playerUiState) {
+  const titleNode = playerRoot.querySelector("[data-bottle-list-title]");
+  const statusNode = playerRoot.querySelector("[data-bottle-list-status]");
+  const groupsNode = playerRoot.querySelector("[data-bottle-list-groups]");
+  const bottleList = playerUiState.bottleList;
+
+  if (titleNode) {
+    titleNode.textContent = bottleList.title || DEFAULT_PUBLIC_BOTTLE_LIST_TITLE;
+  }
+
+  if (statusNode) {
+    statusNode.innerHTML = "";
+
+    if (playerUiState.isBottleListLoading && !playerUiState.hasLoadedBottleList) {
+      statusNode.append(createBottleListNotice("Loading the public bottle list...", "info"));
+    } else if (playerUiState.bottleListUnavailableMessage && !playerUiState.hasLoadedBottleList) {
+      statusNode.append(createBottleListNotice(playerUiState.bottleListUnavailableMessage, "warning"));
+    } else if (playerUiState.bottleListWarning) {
+      statusNode.append(createBottleListNotice(playerUiState.bottleListWarning, "warning"));
+    }
+  }
+
+  if (!groupsNode) {
+    return;
+  }
+
+  groupsNode.innerHTML = "";
+
+  if (playerUiState.isBottleListLoading && !playerUiState.hasLoadedBottleList) {
+    return;
+  }
+
+  if (playerUiState.bottleListUnavailableMessage && !playerUiState.hasLoadedBottleList) {
+    const unavailablePanelNode = document.createElement("div");
+    const unavailableCopyNode = document.createElement("p");
+
+    unavailablePanelNode.className = "hub-panel bottle-list-empty-panel";
+    unavailableCopyNode.textContent = playerUiState.bottleListUnavailableMessage;
+    unavailablePanelNode.append(unavailableCopyNode);
+    groupsNode.append(unavailablePanelNode);
+    return;
+  }
+
+  if (!hasBottleListItems(bottleList)) {
+    const emptyPanelNode = document.createElement("div");
+    const emptyCopyNode = document.createElement("p");
+
+    emptyPanelNode.className = "hub-panel bottle-list-empty-panel";
+    emptyCopyNode.textContent = PLAYER_EMPTY_BOTTLE_LIST_MESSAGE;
+    emptyPanelNode.append(emptyCopyNode);
+    groupsNode.append(emptyPanelNode);
+    return;
+  }
+
+  renderBottleListGroups(groupsNode, bottleList);
+}
+
 function renderHub(playerState, playerUiState) {
   const currentState = playerState.getState();
   const currentPlayer = currentState.currentPlayer;
@@ -256,6 +413,10 @@ function renderHub(playerState, playerUiState) {
 
   if (playerUiState.isViewingHubDetail && isReviewLinksPanel(activePanel)) {
     return renderReviewDetail();
+  }
+
+  if (playerUiState.isViewingHubDetail && isBottleListPanel(activePanel)) {
+    return renderBottleListDetail();
   }
 
   return `
@@ -364,6 +525,10 @@ function populateDynamicHubContent({ playerRoot, state, playerUiState }) {
   if (playerUiState.isViewingHubDetail && isReviewLinksPanel(activePanel)) {
     renderReviewActions(playerRoot.querySelector("[data-review-actions]"), playerUiState.reviewLinks);
   }
+
+  if (playerUiState.isViewingHubDetail && isBottleListPanel(activePanel)) {
+    renderBottleListDetailContent(playerRoot, playerUiState);
+  }
 }
 
 export async function initPlayerPage({ firebase, state, renderStatus }) {
@@ -394,6 +559,11 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     },
     staticPages: normalizeStaticPages(null),
     reviewLinks: normalizeReviewLinks(null),
+    bottleList: normalizeBottleList(null),
+    hasLoadedBottleList: false,
+    isBottleListLoading: true,
+    bottleListWarning: "",
+    bottleListUnavailableMessage: "",
   };
 
   function setPlayerMessage(text = "", tone = "info") {
@@ -446,6 +616,28 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       }
 
       playerUiState.reviewLinks = normalizeReviewLinks(reviewLinksValue);
+      renderPlayerView();
+    });
+
+    unsubscribeBottleListListener = firebase.listenEventData(PUBLIC_BOTTLE_LIST_PATH, (bottleListValue, listenerStatus) => {
+      if (!listenerStatus.ok) {
+        playerUiState.isBottleListLoading = false;
+
+        if (playerUiState.hasLoadedBottleList) {
+          playerUiState.bottleListWarning = "Live bottle list updates are temporarily unavailable. Showing the last posted list.";
+        } else {
+          playerUiState.bottleListUnavailableMessage = "The bottle list is temporarily unavailable right now. Please try again in a moment.";
+        }
+
+        renderPlayerView();
+        return;
+      }
+
+      playerUiState.bottleList = normalizeBottleList(bottleListValue);
+      playerUiState.hasLoadedBottleList = true;
+      playerUiState.isBottleListLoading = false;
+      playerUiState.bottleListWarning = "";
+      playerUiState.bottleListUnavailableMessage = "";
       renderPlayerView();
     });
   }
@@ -535,7 +727,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     if (action === "open-hub-panel") {
       const nextPanel = getHubPanel(actionNode.dataset.panelId || DEFAULT_HUB_PANEL_ID);
 
-      playerUiState.isViewingHubDetail = isStaticPagePanel(nextPanel) || isReviewLinksPanel(nextPanel);
+      playerUiState.isViewingHubDetail = isStaticPagePanel(nextPanel)
+        || isReviewLinksPanel(nextPanel)
+        || isBottleListPanel(nextPanel);
       state.patch({ activeHubPanel: nextPanel.id });
       renderPlayerView();
       return;

@@ -70,12 +70,20 @@ h1 {
   gap: 16px;
 }
 
+.page-content-player {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .card {
   padding: 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-strong) 100%);
   box-shadow: var(--shadow);
+}
+
+.player-card {
+  padding: clamp(20px, 3vw, 28px);
 }
 
 .status-panel {
@@ -103,12 +111,213 @@ h1 {
   line-height: 1.6;
 }
 
+.player-flow {
+  display: grid;
+  gap: 16px;
+}
+
+.player-section {
+  display: grid;
+  gap: 16px;
+}
+
+.player-section-header {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+
+.player-copy {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.player-action-stack,
+.player-form-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.player-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-field {
+  display: grid;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.form-field span {
+  color: var(--text);
+}
+
+.form-field small {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.form-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.form-input:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.2);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+.player-message,
+.player-note {
+  padding: 14px 16px;
+  border-radius: 14px;
+  line-height: 1.5;
+}
+
+.player-message {
+  font-weight: 600;
+}
+
+.player-message[data-tone="info"],
+.player-note[data-tone="info"] {
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent-strong);
+}
+
+.player-message[data-tone="success"],
+.player-note[data-tone="success"] {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-strong);
+}
+
+.player-message[data-tone="warning"],
+.player-note[data-tone="warning"] {
+  background: rgba(180, 83, 9, 0.12);
+  color: #92400e;
+}
+
+.player-message[data-tone="error"],
+.player-note[data-tone="error"] {
+  background: rgba(185, 28, 28, 0.12);
+  color: #991b1b;
+}
+
+.primary-button,
+.secondary-button,
+.hub-button,
+.text-link-button {
+  border: 0;
+  border-radius: 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.primary-button,
+.secondary-button,
+.hub-button {
+  min-height: 56px;
+  padding: 14px 18px;
+  font-weight: 700;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: #fff;
+}
+
+.primary-button:hover,
+.primary-button:focus-visible {
+  background: var(--accent-strong);
+}
+
+.secondary-button {
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent-strong);
+}
+
+.secondary-button:hover,
+.secondary-button:focus-visible {
+  background: rgba(15, 118, 110, 0.14);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.text-link-button {
+  justify-self: start;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.hub-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.hub-button {
+  text-align: left;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 22px rgba(31, 24, 13, 0.05);
+}
+
+.hub-button[aria-pressed="true"] {
+  background: rgba(15, 118, 110, 0.12);
+  border-color: rgba(15, 118, 110, 0.34);
+  color: var(--accent-strong);
+}
+
+.hub-panel {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.hub-panel h3,
+.hub-panel p {
+  margin-bottom: 0;
+}
+
 @media (min-width: 700px) {
   .app-shell {
     padding: 40px 24px 64px;
   }
 
   .page-content {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .page-content-player {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .player-section-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .player-action-stack,
+  .player-form-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hub-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

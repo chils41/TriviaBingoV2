@@ -56,7 +56,7 @@ async function boot() {
 
   renderStatus(`Loading event config for "${firebase.getEventId()}"...`);
 
-  const pageResult = initPage({ context, firebase, state, renderStatus }) || {};
+  const pageResult = await initPage({ context, firebase, state, renderStatus }) || {};
   const configResult = await firebase.loadEventConfig();
   const firebaseStatus = firebase.getStatus();
 

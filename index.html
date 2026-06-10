@@ -15,20 +15,10 @@
       <p class="page-copy">Player-facing foundation for Trivia, Bingo, raffles, and display-linked events.</p>
     </header>
 
-    <main class="page-content">
-      <section class="card">
-        <h2>Player Page</h2>
-        <p>This foundation slice wires the player app shell and shared modules.</p>
+    <main class="page-content page-content-player">
+      <section class="card player-card">
+        <div id="player-app" aria-live="polite"></div>
         <div id="app-status" class="status-panel" aria-live="polite"></div>
-      </section>
-
-      <section class="card">
-        <h2>Next Slices</h2>
-        <ul class="simple-list">
-          <li>Firebase-backed player check-in</li>
-          <li>Trivia gameplay flow</li>
-          <li>Bingo card and attendance features</li>
-        </ul>
       </section>
     </main>
   </div>

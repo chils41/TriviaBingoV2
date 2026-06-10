@@ -15,20 +15,10 @@
       <p class="page-copy">Reserved for system settings, event management, and high-privilege operations.</p>
     </header>
 
-    <main class="page-content">
+    <main class="page-content page-content-single">
       <section class="card">
-        <h2>Admin Page</h2>
-        <p>Admin-specific modules are connected and ready for future slices.</p>
+        <div id="admin-app" aria-live="polite"></div>
         <div id="app-status" class="status-panel" aria-live="polite"></div>
-      </section>
-
-      <section class="card">
-        <h2>Guardrails</h2>
-        <ul class="simple-list">
-          <li>Admin and Host stay separate</li>
-          <li>Firebase remains the source of truth</li>
-          <li>Export logic stays outside Host permissions</li>
-        </ul>
       </section>
     </main>
   </div>

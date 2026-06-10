@@ -7,6 +7,7 @@ export function formatRoleLabel(role) {
 }
 
 const DEVICE_ID_STORAGE_KEY = "eventEngineDeviceId";
+const ROLE_UNLOCK_STORAGE_KEY_PREFIX = "eventEngineRoleUnlock";
 const FIREBASE_KEY_UNSAFE_PATTERN = /[.#$\[\]\/]/g;
 
 function getLocalStorage() {
@@ -18,12 +19,60 @@ function getLocalStorage() {
   }
 }
 
+function getSessionStorage() {
+  try {
+    return window.sessionStorage;
+  } catch (error) {
+    console.warn("[Event Engine] Session storage is unavailable for role unlock state.", error);
+    return null;
+  }
+}
+
 export function normalizeTextInput(value) {
   return String(value ?? "").trim();
 }
 
 export function normalizeEmailInput(value) {
   return normalizeTextInput(value).toLowerCase();
+}
+
+export function buildRoleUnlockStorageKey(role, eventId) {
+  const normalizedRole = normalizeTextInput(role).toLowerCase() || "unknown";
+  const normalizedEventId = normalizeTextInput(eventId) || "default";
+
+  return `${ROLE_UNLOCK_STORAGE_KEY_PREFIX}:${normalizedRole}:${normalizedEventId}`;
+}
+
+export function hasRoleUnlockSession(role, eventId) {
+  const storage = getSessionStorage();
+
+  if (!storage) {
+    return false;
+  }
+
+  return storage.getItem(buildRoleUnlockStorageKey(role, eventId)) === "1";
+}
+
+export function setRoleUnlockSession(role, eventId) {
+  const storage = getSessionStorage();
+
+  if (!storage) {
+    return false;
+  }
+
+  storage.setItem(buildRoleUnlockStorageKey(role, eventId), "1");
+  return true;
+}
+
+export function clearRoleUnlockSession(role, eventId) {
+  const storage = getSessionStorage();
+
+  if (!storage) {
+    return false;
+  }
+
+  storage.removeItem(buildRoleUnlockStorageKey(role, eventId));
+  return true;
 }
 
 export function sanitizeFirebaseKey(value) {

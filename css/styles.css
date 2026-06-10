@@ -74,6 +74,10 @@ h1 {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.page-content-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .card {
   padding: 20px;
   border: 1px solid var(--border);
@@ -176,7 +180,8 @@ h1 {
 }
 
 .player-message,
-.player-note {
+.player-note,
+.notice-panel {
   padding: 14px 16px;
   border-radius: 14px;
   line-height: 1.5;
@@ -187,25 +192,29 @@ h1 {
 }
 
 .player-message[data-tone="info"],
-.player-note[data-tone="info"] {
+.player-note[data-tone="info"],
+.notice-panel[data-tone="info"] {
   background: rgba(15, 118, 110, 0.08);
   color: var(--accent-strong);
 }
 
 .player-message[data-tone="success"],
-.player-note[data-tone="success"] {
+.player-note[data-tone="success"],
+.notice-panel[data-tone="success"] {
   background: rgba(15, 118, 110, 0.12);
   color: var(--accent-strong);
 }
 
 .player-message[data-tone="warning"],
-.player-note[data-tone="warning"] {
+.player-note[data-tone="warning"],
+.notice-panel[data-tone="warning"] {
   background: rgba(180, 83, 9, 0.12);
   color: #92400e;
 }
 
 .player-message[data-tone="error"],
-.player-note[data-tone="error"] {
+.player-note[data-tone="error"],
+.notice-panel[data-tone="error"] {
   background: rgba(185, 28, 28, 0.12);
   color: #991b1b;
 }
@@ -295,6 +304,58 @@ h1 {
   margin-bottom: 0;
 }
 
+.role-gate,
+.pin-form {
+  display: grid;
+  gap: 16px;
+}
+
+.role-gate-header {
+  display: grid;
+  gap: 12px;
+}
+
+.role-copy {
+  margin-bottom: 0;
+}
+
+.role-form-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.role-shell-header {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+}
+
+.role-lock-button {
+  justify-self: start;
+}
+
+.placeholder-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.placeholder-card {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.placeholder-card h3 {
+  margin-bottom: 8px;
+}
+
+.placeholder-card p {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 @media (min-width: 700px) {
   .app-shell {
     padding: 40px 24px 64px;
@@ -314,6 +375,18 @@ h1 {
 
   .player-action-stack,
   .player-form-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .role-form-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .role-shell-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .placeholder-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

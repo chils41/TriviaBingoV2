@@ -1,18 +1,42 @@
 import { initTriviaModule } from "./trivia.js";
 import { initBingoModule } from "./bingo.js";
-import { getExportCapabilities } from "./export.js";
+import { initRoleProtectedPage } from "./role-access.js";
+
+const HOST_PLACEHOLDER_CARDS = [
+  {
+    title: "Trivia Controls",
+    description: "Future live trivia controls will be added here without exposing Admin-only tools.",
+  },
+  {
+    title: "Bingo Controls",
+    description: "Future bingo flow controls will stay inside the Host console.",
+  },
+  {
+    title: "Display Screen",
+    description: "Future display coordination shortcuts will appear here for live event use.",
+  },
+  {
+    title: "Announcements",
+    description: "Future host-only announcement tools will be added in a later slice.",
+  },
+];
 
 export function initHostPage({ firebase, state, renderStatus }) {
-  initTriviaModule({ firebase, state, role: "host" });
-  initBingoModule({ firebase, state, role: "host" });
-
-  const exportCapabilities = getExportCapabilities("host");
-  const firebaseMessage = firebase.isConfigured ? "ready for shared event data" : "running with safe Firebase fallbacks";
-  const statusMessage = `Host shell loaded. Firebase is ${firebaseMessage}. Export access: ${exportCapabilities.allowed ? "enabled" : "disabled"}.`;
-
-  renderStatus(statusMessage, firebase.isConfigured ? "info" : "warning");
-
-  return {
-    statusMessage,
-  };
+  return initRoleProtectedPage({
+    role: "host",
+    rootSelector: "#host-app",
+    state,
+    firebase,
+    renderStatus,
+    pinFieldName: "hostPin",
+    lockedIntroCopy: "Enter the Host PIN to unlock live event and display controls for this browser session.",
+    shellTitle: "Host Console",
+    shellCopy: "Host access is limited to live event operations and display coordination. Admin-only settings, exports, and destructive tools stay locked out.",
+    setupCopy: "Host PIN setup is required before this page can be unlocked.",
+    placeholderCards: HOST_PLACEHOLDER_CARDS,
+    onUnlock() {
+      initTriviaModule({ firebase, state, role: "host" });
+      initBingoModule({ firebase, state, role: "host" });
+    },
+  });
 }

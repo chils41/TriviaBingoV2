@@ -14,6 +14,14 @@ import {
   reconstructBottleListSource,
 } from "./bottle-list.js";
 import {
+  buildTriviaQuestionPoolPayload,
+  normalizeTriviaQuestionPool,
+  parseTriviaQuestionPoolJson,
+  reconstructTriviaQuestionPoolJson,
+  TRIVIA_QUESTION_POOL_PATH,
+  TRIVIA_QUESTION_POOL_SAFE_EXAMPLE_JSON,
+} from "./trivia-pool.js";
+import {
   REVIEW_LINK_DEFINITIONS,
   STATIC_PAGE_DEFINITIONS,
   normalizeMultilineText,
@@ -22,6 +30,7 @@ import {
 } from "./static-pages.js";
 
 const ADMIN_ROOT_SELECTOR = "#admin-app";
+
 let activeAdminRoot = null;
 let activeAdminClickHandler = null;
 let activeAdminInputHandler = null;
@@ -35,10 +44,6 @@ const ADMIN_RESERVED_CARDS = [
   {
     title: "Player Management",
     description: "Future player lookup and record maintenance tools will stay in the Admin area.",
-  },
-  {
-    title: "Question Pools",
-    description: "Future trivia question management will appear here in a later slice.",
   },
   {
     title: "Exports",
@@ -81,6 +86,25 @@ function renderBottleListValidationErrors(errors) {
   return `
     <div class="notice-panel validation-panel" data-tone="error" aria-live="polite">
       <p class="validation-title">Fix these lines before saving:</p>
+      <ul class="validation-list">
+        ${errorItemsMarkup}
+      </ul>
+    </div>
+  `;
+}
+
+function renderTriviaQuestionValidationErrors(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return "";
+  }
+
+  const errorItemsMarkup = errors
+    .map((error) => `<li>${escapeHtml(error)}</li>`)
+    .join("");
+
+  return `
+    <div class="notice-panel validation-panel" data-tone="error" aria-live="polite">
+      <p class="validation-title">Fix these Trivia Question Pool issues before replacing:</p>
       <ul class="validation-list">
         ${errorItemsMarkup}
       </ul>
@@ -178,6 +202,144 @@ function formatUpdatedAt(updatedAt) {
   return parsedDate.toLocaleString();
 }
 
+function renderTriviaCountGrid(countsNode, counts) {
+  if (!countsNode) {
+    return;
+  }
+
+  countsNode.innerHTML = "";
+
+  [
+    { label: "Easy", value: counts.easy },
+    { label: "Medium", value: counts.medium },
+    { label: "Hard", value: counts.hard },
+    { label: "Total", value: counts.total },
+  ].forEach((countDefinition) => {
+    const countNode = document.createElement("article");
+    const valueNode = document.createElement("strong");
+    const labelNode = document.createElement("span");
+
+    countNode.className = "trivia-count-card";
+    valueNode.textContent = String(countDefinition.value);
+    labelNode.textContent = countDefinition.label;
+    countNode.append(valueNode, labelNode);
+    countsNode.append(countNode);
+  });
+}
+
+function createTriviaMetaRow(label, value) {
+  const rowNode = document.createElement("p");
+  const labelNode = document.createElement("strong");
+
+  rowNode.className = "trivia-question-meta";
+  labelNode.textContent = `${label}: `;
+  rowNode.append(labelNode, document.createTextNode(value));
+  return rowNode;
+}
+
+function createTriviaOptionsList(question) {
+  const optionsListNode = document.createElement("ol");
+
+  optionsListNode.className = "trivia-options-list";
+  question.options.forEach((optionValue, optionIndex) => {
+    const optionNode = document.createElement("li");
+
+    optionNode.textContent = `${optionIndex}. ${optionValue}`;
+    optionsListNode.append(optionNode);
+  });
+
+  return optionsListNode;
+}
+
+function createTriviaPreviewCard(question, questionIndex) {
+  const cardNode = document.createElement("article");
+  const headerNode = document.createElement("div");
+  const titleNode = document.createElement("h4");
+  const difficultyBadgeNode = document.createElement("span");
+  const questionCopyNode = document.createElement("p");
+  const answerIndexNode = document.createElement("p");
+  const answerTextNode = document.createElement("p");
+
+  cardNode.className = "hub-panel trivia-question-card";
+  headerNode.className = "trivia-question-header";
+  titleNode.textContent = `Question ${questionIndex + 1}`;
+  difficultyBadgeNode.className = "trivia-difficulty-badge";
+  difficultyBadgeNode.dataset.difficulty = question.difficulty;
+  difficultyBadgeNode.textContent = question.difficulty;
+  questionCopyNode.className = "trivia-question-copy";
+  questionCopyNode.textContent = question.question;
+  answerIndexNode.className = "trivia-answer-note";
+  answerIndexNode.textContent = `Correct answer index: ${question.answer}`;
+  answerTextNode.className = "trivia-answer-note";
+  answerTextNode.textContent = `Correct answer text: ${question.options[question.answer]}`;
+
+  headerNode.append(titleNode, difficultyBadgeNode);
+  cardNode.append(
+    headerNode,
+    createTriviaMetaRow("ID", question.id),
+    createTriviaMetaRow("Difficulty", question.difficulty),
+    questionCopyNode,
+    createTriviaOptionsList(question),
+    answerIndexNode,
+    answerTextNode
+  );
+
+  return cardNode;
+}
+
+function renderTriviaQuestionPoolPreview(previewNode, previewResult) {
+  if (!previewNode) {
+    return;
+  }
+
+  previewNode.innerHTML = "";
+
+  if (!previewResult) {
+    return;
+  }
+
+  const previewSectionNode = document.createElement("section");
+  const previewHeaderNode = document.createElement("div");
+  const eyebrowNode = document.createElement("p");
+  const titleNode = document.createElement("h4");
+  const copyNode = document.createElement("p");
+  const countGridNode = document.createElement("div");
+  const cardsNode = document.createElement("div");
+
+  previewSectionNode.className = "trivia-preview";
+  previewHeaderNode.className = "trivia-preview-header";
+  eyebrowNode.className = "eyebrow";
+  eyebrowNode.textContent = "Preview";
+  titleNode.textContent = "Trivia Question Pool Preview";
+  copyNode.className = "player-copy";
+  countGridNode.className = "trivia-count-grid";
+  cardsNode.className = "trivia-question-list";
+
+  renderTriviaCountGrid(countGridNode, previewResult.counts);
+
+  if (previewResult.isEmpty) {
+    const emptyPanelNode = document.createElement("div");
+    const emptyCopyNode = document.createElement("p");
+
+    copyNode.textContent = "This preview is empty.";
+    emptyPanelNode.className = "hub-panel trivia-empty-panel";
+    emptyCopyNode.textContent = "Replace will refuse empty arrays. Use Clear Question Pool if you intentionally want an empty saved pool.";
+    emptyPanelNode.append(emptyCopyNode);
+    cardsNode.append(emptyPanelNode);
+  } else {
+    const questionLabel = previewResult.questions.length === 1 ? "question" : "questions";
+
+    copyNode.textContent = `Showing ${previewResult.questions.length} ${questionLabel} in saved order.`;
+    previewResult.questions.forEach((question, questionIndex) => {
+      cardsNode.append(createTriviaPreviewCard(question, questionIndex));
+    });
+  }
+
+  previewHeaderNode.append(eyebrowNode, titleNode, copyNode);
+  previewSectionNode.append(previewHeaderNode, countGridNode, cardsNode);
+  previewNode.append(previewSectionNode);
+}
+
 export function initAdminPage({ firebase, state, renderStatus }) {
   const adminRoot = document.querySelector(ADMIN_ROOT_SELECTOR);
   const adminUiState = {
@@ -187,12 +349,18 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     isSavingReviewLinks: false,
     isSavingBottleList: false,
     isClearingBottleList: false,
+    isSavingQuestionPool: false,
+    isClearingQuestionPool: false,
     pages: normalizeStaticPages(null),
     reviewLinks: normalizeReviewLinks(null),
     bottleList: normalizeBottleList(null),
+    questionPool: normalizeTriviaQuestionPool(null),
     bottleListDraft: "",
+    questionPoolDraft: TRIVIA_QUESTION_POOL_SAFE_EXAMPLE_JSON,
     bottleListPreview: null,
+    questionPoolPreview: null,
     bottleListValidationErrors: [],
+    questionPoolValidationErrors: [],
     pageMessage: {
       text: "",
       tone: "info",
@@ -202,6 +370,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       tone: "info",
     },
     bottleListMessage: {
+      text: "",
+      tone: "info",
+    },
+    questionPoolMessage: {
       text: "",
       tone: "info",
     },
@@ -217,6 +389,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
   function setBottleListMessage(text = "", tone = "info") {
     adminUiState.bottleListMessage = { text, tone };
+  }
+
+  function setQuestionPoolMessage(text = "", tone = "info") {
+    adminUiState.questionPoolMessage = { text, tone };
   }
 
   function getEditableBottleListSource(bottleListValue) {
@@ -240,10 +416,39 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     };
   }
 
+  function getEditableTriviaQuestionPoolSource(questionPoolValue, rawQuestionPoolValue) {
+    if (rawQuestionPoolValue === null) {
+      return {
+        draft: TRIVIA_QUESTION_POOL_SAFE_EXAMPLE_JSON,
+        source: "example",
+      };
+    }
+
+    if (!questionPoolValue.isValid) {
+      return {
+        draft: TRIVIA_QUESTION_POOL_SAFE_EXAMPLE_JSON,
+        source: "invalid",
+      };
+    }
+
+    return {
+      draft: reconstructTriviaQuestionPoolJson(questionPoolValue),
+      source: questionPoolValue.order.length === 0 ? "empty" : "saved",
+    };
+  }
+
   function readBottleListDraft(formNode) {
     const formData = new FormData(formNode);
+
     adminUiState.bottleListDraft = String(formData.get("sourceText") ?? "");
     return adminUiState.bottleListDraft;
+  }
+
+  function readQuestionPoolDraft(formNode) {
+    const formData = new FormData(formNode);
+
+    adminUiState.questionPoolDraft = String(formData.get("questionPoolJson") ?? "");
+    return adminUiState.questionPoolDraft;
   }
 
   function applyBottleListPreviewState(previewResult) {
@@ -264,7 +469,30 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     const bottleLabel = previewResult.itemCount === 1 ? "bottle" : "bottles";
     const groupLabel = previewResult.groups.length === 1 ? "group" : "groups";
+
     setBottleListMessage(`Preview ready: ${previewResult.itemCount} ${bottleLabel} across ${previewResult.groups.length} ${groupLabel}.`, "success");
+    return true;
+  }
+
+  function applyQuestionPoolPreviewState(previewResult) {
+    adminUiState.questionPoolValidationErrors = previewResult.errors;
+
+    if (previewResult.errors.length > 0) {
+      adminUiState.questionPoolPreview = null;
+      setQuestionPoolMessage("Fix the validation errors below before replacing the Trivia Question Pool.", "error");
+      return false;
+    }
+
+    adminUiState.questionPoolPreview = previewResult;
+
+    if (previewResult.isEmpty) {
+      setQuestionPoolMessage("Empty arrays cannot replace the Trivia Question Pool. Use Clear Question Pool to intentionally remove it.", "warning");
+      return false;
+    }
+
+    const questionLabel = previewResult.questions.length === 1 ? "question" : "questions";
+
+    setQuestionPoolMessage(`Preview ready: ${previewResult.questions.length} ${questionLabel}.`, "success");
     return true;
   }
 
@@ -310,9 +538,11 @@ export function initAdminPage({ firebase, state, renderStatus }) {
             ${adminUiState.isSavingReviewLinks ? "disabled" : ""}
           >
         </label>
-        `)
+      `)
       .join("");
     const isBottleListBusy = adminUiState.isLoading || adminUiState.isSavingBottleList || adminUiState.isClearingBottleList;
+    const isQuestionPoolBusy = adminUiState.isLoading || adminUiState.isSavingQuestionPool || adminUiState.isClearingQuestionPool;
+    const currentQuestionPoolCounts = adminUiState.questionPoolPreview?.counts || adminUiState.questionPool.counts;
 
     contentNode.innerHTML = `
       <div class="admin-sections">
@@ -360,6 +590,48 @@ export function initAdminPage({ firebase, state, renderStatus }) {
               </button>
             </div>
           </form>
+        </section>
+
+        <section class="player-section admin-section">
+          <div class="player-section-header">
+            <div>
+              <p class="eyebrow">Trivia Question Pool</p>
+              <h3>Trivia Question Pool</h3>
+              <p class="player-copy">Questions stay in Firebase until replaced. <code>answer</code> uses zero-based indexing. This editor manages the saved pool only and does not control live Trivia gameplay.</p>
+            </div>
+          </div>
+          ${renderSectionNotice(adminUiState.questionPoolMessage)}
+          ${renderTriviaQuestionValidationErrors(adminUiState.questionPoolValidationErrors)}
+          <form class="player-form admin-editor-form" data-admin-form="trivia-question-pool" novalidate>
+            <label class="form-field" for="admin-trivia-question-pool-json">
+              <span>Paste Question Pool JSON</span>
+              <textarea
+                id="admin-trivia-question-pool-json"
+                name="questionPoolJson"
+                class="form-input form-textarea"
+                rows="18"
+                data-trivia-question-pool-input
+                ${isQuestionPoolBusy ? "disabled" : ""}
+              ></textarea>
+            </label>
+            <p class="admin-helper-copy">Questions remain in Firebase until replaced. The <code>answer</code> value must be a zero-based option index. Replace only updates <code>/trivia/questionPool</code> and does not create live Trivia state.</p>
+            <div class="trivia-count-grid" data-admin-trivia-counts></div>
+            <div class="admin-meta">
+              Last saved: <span data-trivia-question-pool-updated-at>${escapeHtml(formatUpdatedAt(adminUiState.questionPool.updatedAt))}</span>
+            </div>
+            <div class="admin-button-row">
+              <button type="button" class="secondary-button" data-action="validate-trivia-question-pool" ${isQuestionPoolBusy ? "disabled" : ""}>
+                Validate / Preview
+              </button>
+              <button type="submit" class="primary-button" ${isQuestionPoolBusy ? "disabled" : ""}>
+                ${adminUiState.isSavingQuestionPool ? "Replacing Question Pool..." : "Replace Question Pool"}
+              </button>
+              <button type="button" class="secondary-button" data-action="clear-trivia-question-pool" ${isQuestionPoolBusy ? "disabled" : ""}>
+                ${adminUiState.isClearingQuestionPool ? "Clearing Question Pool..." : "Clear Question Pool"}
+              </button>
+            </div>
+          </form>
+          <div data-trivia-question-pool-preview></div>
         </section>
 
         <section class="player-section admin-section">
@@ -437,6 +709,8 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     const titleField = contentNode.querySelector("[data-static-page-title-input]");
     const contentField = contentNode.querySelector("[data-static-page-content-input]");
+    const questionPoolField = contentNode.querySelector("[data-trivia-question-pool-input]");
+    const bottleListSourceField = contentNode.querySelector("[data-bottle-list-source-input]");
 
     if (titleField instanceof HTMLInputElement) {
       titleField.value = activePage.title;
@@ -446,7 +720,9 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       contentField.value = activePage.content;
     }
 
-    const bottleListSourceField = contentNode.querySelector("[data-bottle-list-source-input]");
+    if (questionPoolField instanceof HTMLTextAreaElement) {
+      questionPoolField.value = adminUiState.questionPoolDraft;
+    }
 
     if (bottleListSourceField instanceof HTMLTextAreaElement) {
       bottleListSourceField.value = adminUiState.bottleListDraft;
@@ -459,6 +735,12 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         inputNode.value = adminUiState.reviewLinks[linkDefinition.key] || "";
       }
     });
+
+    renderTriviaCountGrid(contentNode.querySelector("[data-admin-trivia-counts]"), currentQuestionPoolCounts);
+    renderTriviaQuestionPoolPreview(
+      contentNode.querySelector("[data-trivia-question-pool-preview]"),
+      adminUiState.questionPoolPreview
+    );
   }
 
   async function loadAdminContent() {
@@ -466,25 +748,46 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     setPageMessage();
     setReviewMessage();
     setBottleListMessage();
+    setQuestionPoolMessage();
     renderAdminContent();
 
-    const [pagesValue, reviewLinksValue, bottleListValue] = await Promise.all([
+    const [pagesValue, reviewLinksValue, bottleListValue, questionPoolValue] = await Promise.all([
       firebase.readEventData("pages"),
       firebase.readEventData("reviewLinks"),
       firebase.readEventData(PUBLIC_BOTTLE_LIST_PATH),
+      firebase.readEventData(TRIVIA_QUESTION_POOL_PATH),
     ]);
 
     adminUiState.pages = normalizeStaticPages(pagesValue);
     adminUiState.reviewLinks = normalizeReviewLinks(reviewLinksValue);
     adminUiState.bottleList = normalizeBottleList(bottleListValue);
+    adminUiState.questionPool = normalizeTriviaQuestionPool(questionPoolValue);
     adminUiState.bottleListValidationErrors = [];
+    adminUiState.questionPoolValidationErrors = [];
     adminUiState.bottleListPreview = null;
+    adminUiState.questionPoolPreview = null;
 
     const editableBottleList = getEditableBottleListSource(adminUiState.bottleList);
+    const editableQuestionPool = getEditableTriviaQuestionPoolSource(adminUiState.questionPool, questionPoolValue);
+    const firebaseStatus = firebase.getStatus();
+
     adminUiState.bottleListDraft = editableBottleList.draft;
+    adminUiState.questionPoolDraft = editableQuestionPool.draft;
 
     if (editableBottleList.wasReconstructed) {
       setBottleListMessage("Loaded the saved bottle list by reconstructing editable text from structured data.", "info");
+    }
+
+    if (questionPoolValue === null && firebaseStatus.error) {
+      setQuestionPoolMessage(firebaseStatus.message || "Trivia Question Pool data is temporarily unavailable.", "error");
+    } else if (editableQuestionPool.source === "example") {
+      setQuestionPoolMessage("No Trivia Question Pool is saved yet. The editor has been prefilled with a safe example that will not save until you replace the pool.", "info");
+    } else if (editableQuestionPool.source === "saved") {
+      setQuestionPoolMessage("Loaded the saved Trivia Question Pool from Firebase.", "info");
+    } else if (editableQuestionPool.source === "empty") {
+      setQuestionPoolMessage("Loaded the saved empty Trivia Question Pool from Firebase. Replace it with questions or keep it empty with Clear Question Pool.", "info");
+    } else if (editableQuestionPool.source === "invalid") {
+      setQuestionPoolMessage("The saved Trivia Question Pool is invalid. The editor was reset to the safe example until the pool is replaced.", "error");
     }
 
     adminUiState.isLoading = false;
@@ -572,6 +875,15 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     return previewResult;
   }
 
+  function validateQuestionPool(formNode) {
+    const sourceText = readQuestionPoolDraft(formNode);
+    const previewResult = parseTriviaQuestionPoolJson(sourceText);
+
+    applyQuestionPoolPreviewState(previewResult);
+    renderAdminContent();
+    return previewResult;
+  }
+
   async function saveBottleList(formNode) {
     const sourceText = readBottleListDraft(formNode);
     const previewResult = parseBottleListSource(sourceText);
@@ -607,6 +919,55 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     adminUiState.bottleListValidationErrors = [];
     adminUiState.bottleListPreview = previewResult;
     setBottleListMessage("Public Bottle List saved to Firebase.", "success");
+    renderAdminContent();
+  }
+
+  async function saveQuestionPool(formNode) {
+    const sourceText = readQuestionPoolDraft(formNode);
+    const previewResult = parseTriviaQuestionPoolJson(sourceText);
+    const canReplace = applyQuestionPoolPreviewState(previewResult);
+
+    if (!canReplace) {
+      renderAdminContent();
+      return;
+    }
+
+    const replaceConfirmed = window.confirm(
+      "Replace the saved Trivia Question Pool in Firebase? This updates only /trivia/questionPool and does not create live Trivia gameplay state."
+    );
+
+    if (!replaceConfirmed) {
+      renderAdminContent();
+      return;
+    }
+
+    adminUiState.isSavingQuestionPool = true;
+    setQuestionPoolMessage();
+    renderAdminContent();
+
+    const nextQuestionPoolPayload = buildTriviaQuestionPoolPayload({
+      questions: previewResult.questions,
+      updatedAt: new Date().toISOString(),
+    });
+    const saveSucceeded = await firebase.writeEventData(TRIVIA_QUESTION_POOL_PATH, nextQuestionPoolPayload);
+
+    adminUiState.isSavingQuestionPool = false;
+
+    if (!saveSucceeded) {
+      setQuestionPoolMessage(firebase.getStatus().message || "We could not replace the Trivia Question Pool right now. Please try again.", "error");
+      renderAdminContent();
+      return;
+    }
+
+    adminUiState.questionPool = normalizeTriviaQuestionPool(nextQuestionPoolPayload);
+    adminUiState.questionPoolDraft = reconstructTriviaQuestionPoolJson(adminUiState.questionPool);
+    adminUiState.questionPoolValidationErrors = [];
+    adminUiState.questionPoolPreview = {
+      ...previewResult,
+      questions: adminUiState.questionPool.orderedQuestions,
+      counts: adminUiState.questionPool.counts,
+    };
+    setQuestionPoolMessage("Trivia Question Pool replaced in Firebase.", "success");
     renderAdminContent();
   }
 
@@ -647,6 +1008,41 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     renderAdminContent();
   }
 
+  async function clearQuestionPool() {
+    const clearConfirmed = window.confirm(
+      "Clear the saved Trivia Question Pool from Firebase? This writes an intentional empty pool to /trivia/questionPool and does not create live Trivia gameplay state."
+    );
+
+    if (!clearConfirmed) {
+      return;
+    }
+
+    adminUiState.isClearingQuestionPool = true;
+    setQuestionPoolMessage();
+    renderAdminContent();
+
+    const emptyQuestionPoolPayload = buildTriviaQuestionPoolPayload({
+      questions: [],
+      updatedAt: new Date().toISOString(),
+    });
+    const clearSucceeded = await firebase.writeEventData(TRIVIA_QUESTION_POOL_PATH, emptyQuestionPoolPayload);
+
+    adminUiState.isClearingQuestionPool = false;
+
+    if (!clearSucceeded) {
+      setQuestionPoolMessage(firebase.getStatus().message || "We could not clear the Trivia Question Pool right now. Please try again.", "error");
+      renderAdminContent();
+      return;
+    }
+
+    adminUiState.questionPool = normalizeTriviaQuestionPool(emptyQuestionPoolPayload);
+    adminUiState.questionPoolDraft = reconstructTriviaQuestionPoolJson(adminUiState.questionPool);
+    adminUiState.questionPoolValidationErrors = [];
+    adminUiState.questionPoolPreview = null;
+    setQuestionPoolMessage("Trivia Question Pool cleared from Firebase.", "success");
+    renderAdminContent();
+  }
+
   if (activeAdminRoot && activeAdminClickHandler) {
     activeAdminRoot.removeEventListener("click", activeAdminClickHandler);
   }
@@ -680,6 +1076,21 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         return;
       }
 
+      if (actionNode.dataset.action === "validate-trivia-question-pool") {
+        const formNode = actionNode.closest('[data-admin-form="trivia-question-pool"]');
+
+        if (formNode instanceof HTMLFormElement) {
+          validateQuestionPool(formNode);
+        }
+
+        return;
+      }
+
+      if (actionNode.dataset.action === "clear-trivia-question-pool") {
+        await clearQuestionPool();
+        return;
+      }
+
       if (actionNode.dataset.action === "validate-bottle-list") {
         const formNode = actionNode.closest('[data-admin-form="public-bottle-list"]');
 
@@ -697,6 +1108,14 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     activeAdminInputHandler = (event) => {
       const inputNode = event.target;
+
+      if (inputNode instanceof HTMLTextAreaElement && inputNode.dataset.triviaQuestionPoolInput !== undefined) {
+        adminUiState.questionPoolDraft = inputNode.value;
+        adminUiState.questionPoolValidationErrors = [];
+        adminUiState.questionPoolPreview = null;
+        setQuestionPoolMessage();
+        return;
+      }
 
       if (!(inputNode instanceof HTMLTextAreaElement) || inputNode.dataset.bottleListSourceInput === undefined) {
         return;
@@ -724,6 +1143,12 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       if (formNode.dataset.adminForm === "review-links") {
         event.preventDefault();
         await saveReviewLinks(formNode);
+        return;
+      }
+
+      if (formNode.dataset.adminForm === "trivia-question-pool") {
+        event.preventDefault();
+        await saveQuestionPool(formNode);
         return;
       }
 

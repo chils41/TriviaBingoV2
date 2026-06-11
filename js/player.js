@@ -8,6 +8,21 @@ import {
   PUBLIC_BOTTLE_LIST_PATH,
 } from "./bottle-list.js";
 import {
+  buildTriviaAnswerPayload,
+  createEmptyTriviaAnswerRecord,
+  getTriviaPlayerAnswerPath,
+  getTriviaRoundStatusLabel,
+  hasActiveTriviaRound,
+  isTriviaRoundLive,
+  isValidTriviaAnswerForRound,
+  normalizeTriviaAnswerRecord,
+  normalizeTriviaCurrentRound,
+  TRIVIA_CURRENT_ROUND_PATH,
+  TRIVIA_ROUND_STATUS_LOCKED,
+  TRIVIA_ROUND_STATUS_QUESTION_LIVE,
+  TRIVIA_ROUND_STATUS_REVEALED,
+} from "./trivia-live.js";
+import {
   escapeHtml,
   getOrCreateDeviceId,
   getPreferredName,
@@ -26,21 +41,25 @@ import {
 } from "./static-pages.js";
 
 const PLAYER_ROOT_SELECTOR = "#player-app";
+const PLAYER_TRIVIA_WAITING_MESSAGE = "Waiting for the next Trivia question...";
 
 let unsubscribePagesListener = null;
 let unsubscribeReviewLinksListener = null;
 let unsubscribeBottleListListener = null;
+let unsubscribePlayerTriviaRoundListener = null;
+let unsubscribePlayerTriviaAnswerListener = null;
 let activePlayerRoot = null;
 let activePlayerClickHandler = null;
 let activePlayerSubmitHandler = null;
+let hasBoundPlayerBeforeUnload = false;
 
 const HUB_PANELS = [
   {
     id: "trivia",
     label: "Trivia",
     title: "Trivia",
-    message: "Trivia is coming in the next slice.",
-    kind: "placeholder",
+    message: "Open Trivia to see the current live question, answer while it is live, and review the reveal.",
+    kind: "trivia",
   },
   {
     id: "bingo",
@@ -93,6 +112,40 @@ function clearPlayerContentListeners() {
   unsubscribeBottleListListener = null;
 }
 
+function clearPlayerTriviaListeners() {
+  if (typeof unsubscribePlayerTriviaRoundListener === "function") {
+    unsubscribePlayerTriviaRoundListener();
+  }
+
+  if (typeof unsubscribePlayerTriviaAnswerListener === "function") {
+    unsubscribePlayerTriviaAnswerListener();
+  }
+
+  unsubscribePlayerTriviaRoundListener = null;
+  unsubscribePlayerTriviaAnswerListener = null;
+}
+
+function cleanupPlayerPageRuntime() {
+  clearPlayerContentListeners();
+  clearPlayerTriviaListeners();
+
+  if (activePlayerRoot && activePlayerClickHandler) {
+    activePlayerRoot.removeEventListener("click", activePlayerClickHandler);
+  }
+
+  if (activePlayerRoot && activePlayerSubmitHandler) {
+    activePlayerRoot.removeEventListener("submit", activePlayerSubmitHandler);
+  }
+
+  activePlayerRoot = null;
+  activePlayerClickHandler = null;
+  activePlayerSubmitHandler = null;
+}
+
+function handlePlayerBeforeUnload() {
+  cleanupPlayerPageRuntime();
+}
+
 function getPlayerRecordPath(playerId) {
   return `players/${playerId}`;
 }
@@ -123,6 +176,17 @@ function isReviewLinksPanel(panel) {
 
 function isBottleListPanel(panel) {
   return panel?.kind === "bottle-list";
+}
+
+function isTriviaPanel(panel) {
+  return panel?.kind === "trivia";
+}
+
+function shouldOpenHubDetailPanel(panel) {
+  return isTriviaPanel(panel)
+    || isStaticPagePanel(panel)
+    || isReviewLinksPanel(panel)
+    || isBottleListPanel(panel);
 }
 
 function renderPlayerMessage(playerMessage) {
@@ -216,6 +280,25 @@ function renderHubSummary(activePanel) {
   `;
 }
 
+function renderTriviaDetail() {
+  return `
+    <section class="player-section">
+      <div class="player-section-header">
+        <div>
+          <p class="eyebrow">Event Hub</p>
+          <h2>Trivia</h2>
+          <p class="player-copy">Watch for the live question, answer while it is open, and check the reveal when the Host finishes the round.</p>
+        </div>
+        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
+      </div>
+      <div class="trivia-live-detail">
+        <div data-player-trivia-status></div>
+        <div data-player-trivia-panel></div>
+      </div>
+    </section>
+  `;
+}
+
 function renderStaticPageDetail() {
   return `
     <section class="player-section">
@@ -268,7 +351,7 @@ function renderBottleListDetail() {
   `;
 }
 
-function createBottleListNotice(message, tone) {
+function createPlayerNotice(message, tone) {
   const noticeNode = document.createElement("div");
 
   noticeNode.className = "player-note";
@@ -346,11 +429,11 @@ function renderBottleListDetailContent(playerRoot, playerUiState) {
     statusNode.innerHTML = "";
 
     if (playerUiState.isBottleListLoading && !playerUiState.hasLoadedBottleList) {
-      statusNode.append(createBottleListNotice("Loading the public bottle list...", "info"));
+      statusNode.append(createPlayerNotice("Loading the public bottle list...", "info"));
     } else if (playerUiState.bottleListUnavailableMessage && !playerUiState.hasLoadedBottleList) {
-      statusNode.append(createBottleListNotice(playerUiState.bottleListUnavailableMessage, "warning"));
+      statusNode.append(createPlayerNotice(playerUiState.bottleListUnavailableMessage, "warning"));
     } else if (playerUiState.bottleListWarning) {
-      statusNode.append(createBottleListNotice(playerUiState.bottleListWarning, "warning"));
+      statusNode.append(createPlayerNotice(playerUiState.bottleListWarning, "warning"));
     }
   }
 
@@ -407,6 +490,10 @@ function renderHub(playerState, playerUiState) {
     `)
     .join("");
 
+  if (playerUiState.isViewingHubDetail && isTriviaPanel(activePanel)) {
+    return renderTriviaDetail();
+  }
+
   if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
     return renderStaticPageDetail();
   }
@@ -428,7 +515,7 @@ function renderHub(playerState, playerUiState) {
         </div>
         <button type="button" class="text-link-button" data-action="edit-check-in">Edit Check-In</button>
       </div>
-      <p class="player-copy">Choose a section below. More gameplay and live event features will be added in the next slices.</p>
+      <p class="player-copy">Choose a section below. Live Trivia is ready here, while additional event features will continue to expand in later slices.</p>
       <div class="hub-grid">
         ${hubButtonsMarkup}
       </div>
@@ -481,6 +568,201 @@ function renderReviewActions(reviewActionsNode, reviewLinks) {
   });
 }
 
+function createTriviaSummaryRow(label, value) {
+  const summaryNode = document.createElement("p");
+  const labelNode = document.createElement("strong");
+
+  summaryNode.className = "trivia-question-meta";
+  labelNode.textContent = `${label}: `;
+  summaryNode.append(labelNode, document.createTextNode(value));
+  return summaryNode;
+}
+
+function appendTriviaAnswerSummary(containerNode, label, answerIndex, options) {
+  if (!Number.isInteger(answerIndex) || !options[answerIndex]) {
+    return;
+  }
+
+  containerNode.append(
+    createTriviaSummaryRow(label, `Choice ${answerIndex + 1} (${options[answerIndex]})`)
+  );
+}
+
+function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
+  const statusNode = playerRoot.querySelector("[data-player-trivia-status]");
+  const panelNode = playerRoot.querySelector("[data-player-trivia-panel]");
+  const currentRound = playerUiState.triviaRound;
+  const savedAnswer = isValidTriviaAnswerForRound(playerUiState.triviaAnswer, currentRound)
+    ? playerUiState.triviaAnswer
+    : null;
+  const hasResolvedCurrentRoundAnswer = playerUiState.hasLoadedTriviaAnswer || !playerUiState.isTriviaAnswerLoading;
+
+  if (statusNode) {
+    statusNode.innerHTML = "";
+
+    if (playerUiState.triviaActionMessage.text) {
+      statusNode.append(createPlayerNotice(playerUiState.triviaActionMessage.text, playerUiState.triviaActionMessage.tone));
+    }
+
+    if (playerUiState.isTriviaRoundLoading && !playerUiState.hasLoadedTriviaRound) {
+      statusNode.append(createPlayerNotice("Loading the current Trivia question...", "info"));
+    } else if (playerUiState.triviaRoundUnavailableMessage && !playerUiState.hasLoadedTriviaRound) {
+      statusNode.append(createPlayerNotice(playerUiState.triviaRoundUnavailableMessage, "warning"));
+    } else if (playerUiState.triviaRoundWarning) {
+      statusNode.append(createPlayerNotice(playerUiState.triviaRoundWarning, "warning"));
+    }
+
+    if (hasActiveTriviaRound(currentRound)) {
+      if (playerUiState.triviaAnswerUnavailableMessage && !playerUiState.hasLoadedTriviaAnswer) {
+        statusNode.append(createPlayerNotice(playerUiState.triviaAnswerUnavailableMessage, "warning"));
+      } else if (playerUiState.triviaAnswerWarning) {
+        statusNode.append(createPlayerNotice(playerUiState.triviaAnswerWarning, "warning"));
+      }
+
+      if (playerUiState.isSavingTriviaAnswer) {
+        statusNode.append(createPlayerNotice("Saving your Trivia answer...", "info"));
+      }
+    }
+  }
+
+  if (!panelNode) {
+    return;
+  }
+
+  panelNode.innerHTML = "";
+
+  if (!hasActiveTriviaRound(currentRound)) {
+    const waitingPanelNode = document.createElement("section");
+    const waitingCopyNode = document.createElement("p");
+
+    waitingPanelNode.className = "hub-panel trivia-player-panel";
+    waitingCopyNode.className = "player-copy";
+    waitingCopyNode.textContent = PLAYER_TRIVIA_WAITING_MESSAGE;
+    waitingPanelNode.append(waitingCopyNode);
+    panelNode.append(waitingPanelNode);
+    return;
+  }
+
+  const triviaPanelNode = document.createElement("section");
+  const headerNode = document.createElement("div");
+  const titleWrapNode = document.createElement("div");
+  const eyebrowNode = document.createElement("p");
+  const titleNode = document.createElement("h3");
+  const statusBadgeNode = document.createElement("span");
+  const questionNode = document.createElement("p");
+  const helperCopyNode = document.createElement("p");
+  const optionsGridNode = document.createElement("div");
+
+  triviaPanelNode.className = "trivia-player-panel";
+  headerNode.className = "trivia-status-row";
+  eyebrowNode.className = "eyebrow";
+  eyebrowNode.textContent = "Live Trivia";
+  titleNode.textContent = currentRound.questionId || "Current Question";
+  statusBadgeNode.className = "trivia-status-badge";
+  statusBadgeNode.dataset.triviaStatus = currentRound.status;
+  statusBadgeNode.textContent = getTriviaRoundStatusLabel(currentRound.status);
+  titleWrapNode.append(eyebrowNode, titleNode);
+  headerNode.append(titleWrapNode, statusBadgeNode);
+  questionNode.className = "trivia-question-copy";
+  questionNode.textContent = currentRound.question;
+  helperCopyNode.className = "player-copy";
+  optionsGridNode.className = "trivia-answer-grid";
+
+  if (currentRound.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE) {
+    helperCopyNode.textContent = savedAnswer
+      ? "Your current answer is saved. You can still change it while the question stays live."
+      : "Tap an answer below. You can change it until the Host locks the round.";
+  } else if (currentRound.status === TRIVIA_ROUND_STATUS_LOCKED) {
+    helperCopyNode.textContent = "Answers are locked.";
+  } else {
+    helperCopyNode.textContent = "The correct answer has been revealed.";
+  }
+
+  currentRound.options.forEach((optionValue, optionIndex) => {
+    const answerButtonNode = document.createElement("button");
+    const isSelected = savedAnswer?.answer === optionIndex;
+    const isDisabled = !isTriviaRoundLive(currentRound) || playerUiState.isSavingTriviaAnswer;
+    const isCorrectReveal = currentRound.status === TRIVIA_ROUND_STATUS_REVEALED
+      && currentRound.correctAnswer === optionIndex;
+    const isIncorrectReveal = currentRound.status === TRIVIA_ROUND_STATUS_REVEALED
+      && isSelected
+      && currentRound.correctAnswer !== optionIndex;
+
+    answerButtonNode.type = "button";
+    answerButtonNode.className = "secondary-button trivia-answer-button";
+    answerButtonNode.dataset.action = "select-trivia-answer";
+    answerButtonNode.dataset.answerIndex = String(optionIndex);
+    answerButtonNode.dataset.selected = isSelected ? "true" : "false";
+    answerButtonNode.dataset.correct = isCorrectReveal ? "true" : "false";
+    answerButtonNode.dataset.incorrect = isIncorrectReveal ? "true" : "false";
+    answerButtonNode.disabled = isDisabled;
+    answerButtonNode.textContent = `Choice ${optionIndex + 1}: ${optionValue}`;
+    optionsGridNode.append(answerButtonNode);
+  });
+
+  triviaPanelNode.append(headerNode, questionNode, helperCopyNode, optionsGridNode);
+
+  if (playerUiState.isTriviaAnswerLoading && !savedAnswer) {
+    const answerLoadingNode = document.createElement("p");
+
+    answerLoadingNode.className = "player-copy";
+    answerLoadingNode.textContent = "Checking your saved answer for this round...";
+    triviaPanelNode.append(answerLoadingNode);
+  }
+
+  if (currentRound.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE && savedAnswer) {
+    appendTriviaAnswerSummary(triviaPanelNode, "Current answer", savedAnswer.answer, currentRound.options);
+  }
+
+  if (currentRound.status === TRIVIA_ROUND_STATUS_LOCKED) {
+    if (savedAnswer) {
+      appendTriviaAnswerSummary(triviaPanelNode, "Submitted answer", savedAnswer.answer, currentRound.options);
+    } else if (hasResolvedCurrentRoundAnswer) {
+      const missedAnswerNode = document.createElement("p");
+
+      missedAnswerNode.className = "trivia-answer-note";
+      missedAnswerNode.textContent = "No answer was submitted before the round was locked.";
+      triviaPanelNode.append(missedAnswerNode);
+    }
+  }
+
+  if (currentRound.status === TRIVIA_ROUND_STATUS_REVEALED) {
+    appendTriviaAnswerSummary(triviaPanelNode, "Correct answer", currentRound.correctAnswer, currentRound.options);
+
+    if (savedAnswer) {
+      appendTriviaAnswerSummary(triviaPanelNode, "Your answer", savedAnswer.answer, currentRound.options);
+    } else if (hasResolvedCurrentRoundAnswer) {
+      const noAnswerNode = document.createElement("p");
+
+      noAnswerNode.className = "trivia-answer-note";
+      noAnswerNode.textContent = "No answer was submitted before the reveal.";
+      triviaPanelNode.append(noAnswerNode);
+    }
+
+    const resultNode = document.createElement("div");
+
+    resultNode.className = "trivia-result-pill";
+
+    if (!savedAnswer && hasResolvedCurrentRoundAnswer) {
+      resultNode.dataset.tone = "warning";
+      resultNode.textContent = "No answer submitted";
+    } else if (savedAnswer && savedAnswer.answer === currentRound.correctAnswer) {
+      resultNode.dataset.tone = "success";
+      resultNode.textContent = "Correct";
+    } else if (savedAnswer) {
+      resultNode.dataset.tone = "error";
+      resultNode.textContent = "Incorrect";
+    } else {
+      resultNode.dataset.tone = "info";
+      resultNode.textContent = "Checking your saved answer...";
+    }
+
+    triviaPanelNode.append(resultNode);
+  }
+
+  panelNode.append(triviaPanelNode);
+}
+
 function populateDynamicHubContent({ playerRoot, state, playerUiState }) {
   const currentState = state.getState();
   const currentPlayer = currentState.currentPlayer;
@@ -504,6 +786,10 @@ function populateDynamicHubContent({ playerRoot, state, playerUiState }) {
     if (emailField instanceof HTMLInputElement) {
       emailField.value = playerRecord.email || "";
     }
+  }
+
+  if (playerUiState.isViewingHubDetail && isTriviaPanel(activePanel)) {
+    renderPlayerTriviaDetailContent(playerRoot, playerUiState);
   }
 
   if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
@@ -535,9 +821,14 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   initTriviaModule({ firebase, state, role: "player" });
   initBingoModule({ firebase, state, role: "player" });
 
+  cleanupPlayerPageRuntime();
+
   const playerRoot = document.querySelector(PLAYER_ROOT_SELECTOR);
 
-  clearPlayerContentListeners();
+  if (!hasBoundPlayerBeforeUnload) {
+    window.addEventListener("beforeunload", handlePlayerBeforeUnload);
+    hasBoundPlayerBeforeUnload = true;
+  }
 
   if (!playerRoot) {
     const missingRootMessage = "Player app container is missing from index.html.";
@@ -564,10 +855,125 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     isBottleListLoading: true,
     bottleListWarning: "",
     bottleListUnavailableMessage: "",
+    triviaRound: normalizeTriviaCurrentRound(null),
+    hasLoadedTriviaRound: false,
+    isTriviaRoundLoading: true,
+    triviaRoundWarning: "",
+    triviaRoundUnavailableMessage: "",
+    triviaAnswer: createEmptyTriviaAnswerRecord(),
+    hasLoadedTriviaAnswer: false,
+    isTriviaAnswerLoading: false,
+    triviaAnswerWarning: "",
+    triviaAnswerUnavailableMessage: "",
+    triviaActionMessage: {
+      text: "",
+      tone: "info",
+    },
+    activeTriviaAnswerRoundId: "",
+    isSavingTriviaAnswer: false,
   };
 
   function setPlayerMessage(text = "", tone = "info") {
     playerUiState.playerMessage = { text, tone };
+  }
+
+  function setTriviaActionMessage(text = "", tone = "info") {
+    playerUiState.triviaActionMessage = { text, tone };
+  }
+
+  function getActiveTriviaPlayerId() {
+    const currentState = state.getState();
+    return currentState.deviceId || currentState.currentPlayer?.playerId || getOrCreateDeviceId();
+  }
+
+  function clearPlayerTriviaAnswerState() {
+    playerUiState.triviaAnswer = createEmptyTriviaAnswerRecord();
+    playerUiState.hasLoadedTriviaAnswer = false;
+    playerUiState.isTriviaAnswerLoading = false;
+    playerUiState.triviaAnswerWarning = "";
+    playerUiState.triviaAnswerUnavailableMessage = "";
+    playerUiState.isSavingTriviaAnswer = false;
+  }
+
+  function detachPlayerTriviaAnswerListener({ clearState = true } = {}) {
+    if (typeof unsubscribePlayerTriviaAnswerListener === "function") {
+      unsubscribePlayerTriviaAnswerListener();
+    }
+
+    unsubscribePlayerTriviaAnswerListener = null;
+    playerUiState.activeTriviaAnswerRoundId = "";
+
+    if (clearState) {
+      clearPlayerTriviaAnswerState();
+    }
+  }
+
+  function syncPlayerTriviaAnswerListener(round) {
+    const normalizedRound = normalizeTriviaCurrentRound(round);
+
+    if (!hasActiveTriviaRound(normalizedRound) || !normalizedRound.roundId) {
+      detachPlayerTriviaAnswerListener({ clearState: true });
+      return;
+    }
+
+    if (playerUiState.activeTriviaAnswerRoundId === normalizedRound.roundId && typeof unsubscribePlayerTriviaAnswerListener === "function") {
+      return;
+    }
+
+    const playerId = getActiveTriviaPlayerId();
+
+    detachPlayerTriviaAnswerListener({ clearState: true });
+    playerUiState.activeTriviaAnswerRoundId = normalizedRound.roundId;
+    playerUiState.isTriviaAnswerLoading = true;
+
+    unsubscribePlayerTriviaAnswerListener = firebase.listenEventData(
+      getTriviaPlayerAnswerPath(normalizedRound.roundId, playerId),
+      (answerValue, listenerStatus) => {
+        if (playerUiState.activeTriviaAnswerRoundId !== normalizedRound.roundId) {
+          return;
+        }
+
+        if (!listenerStatus.ok) {
+          playerUiState.isTriviaAnswerLoading = false;
+
+          if (playerUiState.hasLoadedTriviaAnswer) {
+            playerUiState.triviaAnswerWarning = "Your saved Trivia answer is temporarily unavailable. Showing the last loaded answer.";
+          } else {
+            playerUiState.triviaAnswerUnavailableMessage = "Your saved Trivia answer is temporarily unavailable right now.";
+          }
+
+          renderPlayerView();
+          return;
+        }
+
+        const normalizedAnswer = normalizeTriviaAnswerRecord(answerValue, {
+          roundId: normalizedRound.roundId,
+          playerId,
+        });
+
+        if (!normalizedAnswer.isValid && !normalizedAnswer.isEmpty) {
+          playerUiState.isTriviaAnswerLoading = false;
+
+          if (playerUiState.hasLoadedTriviaAnswer) {
+            playerUiState.triviaAnswerWarning = "Your saved Trivia answer is invalid. Showing the last loaded answer.";
+          } else {
+            playerUiState.triviaAnswerUnavailableMessage = "Your saved Trivia answer data is invalid right now.";
+          }
+
+          renderPlayerView();
+          return;
+        }
+
+        playerUiState.triviaAnswer = normalizedAnswer.isEmpty
+          ? createEmptyTriviaAnswerRecord()
+          : normalizedAnswer;
+        playerUiState.hasLoadedTriviaAnswer = true;
+        playerUiState.isTriviaAnswerLoading = false;
+        playerUiState.triviaAnswerWarning = "";
+        playerUiState.triviaAnswerUnavailableMessage = "";
+        renderPlayerView();
+      }
+    );
   }
 
   function renderPlayerView() {
@@ -642,6 +1048,60 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     });
   }
 
+  function attachPlayerTriviaRoundListener() {
+    if (typeof unsubscribePlayerTriviaRoundListener === "function") {
+      unsubscribePlayerTriviaRoundListener();
+      unsubscribePlayerTriviaRoundListener = null;
+    }
+
+    playerUiState.isTriviaRoundLoading = !playerUiState.hasLoadedTriviaRound;
+
+    unsubscribePlayerTriviaRoundListener = firebase.listenEventData(
+      TRIVIA_CURRENT_ROUND_PATH,
+      (roundValue, listenerStatus) => {
+        if (!listenerStatus.ok) {
+          playerUiState.isTriviaRoundLoading = false;
+
+          if (playerUiState.hasLoadedTriviaRound) {
+            playerUiState.triviaRoundWarning = "Live Trivia updates are temporarily unavailable. Showing the last loaded question state.";
+          } else {
+            playerUiState.triviaRoundUnavailableMessage = "Live Trivia is temporarily unavailable right now.";
+            playerUiState.triviaRound = normalizeTriviaCurrentRound(null);
+            detachPlayerTriviaAnswerListener({ clearState: true });
+          }
+
+          renderPlayerView();
+          return;
+        }
+
+        const normalizedRound = normalizeTriviaCurrentRound(roundValue);
+
+        if (!normalizedRound.isValid) {
+          playerUiState.isTriviaRoundLoading = false;
+
+          if (playerUiState.hasLoadedTriviaRound) {
+            playerUiState.triviaRoundWarning = "The current Trivia round data is invalid. Showing the last loaded round.";
+          } else {
+            playerUiState.triviaRoundUnavailableMessage = "The current Trivia round data is invalid right now.";
+            playerUiState.triviaRound = normalizeTriviaCurrentRound(null);
+            detachPlayerTriviaAnswerListener({ clearState: true });
+          }
+
+          renderPlayerView();
+          return;
+        }
+
+        playerUiState.triviaRound = normalizedRound;
+        playerUiState.hasLoadedTriviaRound = true;
+        playerUiState.isTriviaRoundLoading = false;
+        playerUiState.triviaRoundWarning = "";
+        playerUiState.triviaRoundUnavailableMessage = "";
+        syncPlayerTriviaAnswerListener(normalizedRound);
+        renderPlayerView();
+      }
+    );
+  }
+
   async function restoreExistingPlayer() {
     const deviceId = getOrCreateDeviceId();
 
@@ -684,15 +1144,85 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     return "";
   }
 
-  if (activePlayerRoot && activePlayerClickHandler) {
-    activePlayerRoot.removeEventListener("click", activePlayerClickHandler);
+  async function savePlayerTriviaAnswer(answerIndex) {
+    const currentPlayer = state.getState().currentPlayer;
+    const currentRound = playerUiState.triviaRound;
+    const savedAnswer = isValidTriviaAnswerForRound(playerUiState.triviaAnswer, currentRound)
+      ? playerUiState.triviaAnswer
+      : null;
+
+    if (!currentPlayer) {
+      setTriviaActionMessage("Please complete check-in before answering Trivia.", "warning");
+      renderPlayerView();
+      return;
+    }
+
+    if (!firebase.getStatus().isConnected) {
+      setTriviaActionMessage("Trivia answers are temporarily unavailable because the event connection is not ready.", "warning");
+      renderPlayerView();
+      return;
+    }
+
+    if (!isTriviaRoundLive(currentRound) || !currentRound.roundId) {
+      setTriviaActionMessage("This Trivia question is no longer accepting answers.", "warning");
+      renderPlayerView();
+      return;
+    }
+
+    if (!Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= currentRound.options.length) {
+      setTriviaActionMessage("That Trivia answer choice is invalid. Please try again.", "error");
+      renderPlayerView();
+      return;
+    }
+
+    if (savedAnswer && savedAnswer.answer === answerIndex) {
+      return;
+    }
+
+    const playerId = getActiveTriviaPlayerId();
+    const roundIdAtSubmit = currentRound.roundId;
+    const now = new Date().toISOString();
+    const nextAnswerPayload = buildTriviaAnswerPayload({
+      roundId: roundIdAtSubmit,
+      playerId,
+      answer: answerIndex,
+      submittedAt: savedAnswer?.submittedAt || now,
+      updatedAt: now,
+    });
+
+    playerUiState.isSavingTriviaAnswer = true;
+    setTriviaActionMessage();
+    renderPlayerView();
+
+    const saveSucceeded = await firebase.writeEventData(
+      getTriviaPlayerAnswerPath(roundIdAtSubmit, playerId),
+      nextAnswerPayload
+    );
+
+    playerUiState.isSavingTriviaAnswer = false;
+
+    if (!saveSucceeded) {
+      setTriviaActionMessage(firebase.getStatus().message || "We could not save your Trivia answer right now. Please try again.", "error");
+      renderPlayerView();
+      return;
+    }
+
+    if (playerUiState.triviaRound.roundId === roundIdAtSubmit) {
+      playerUiState.triviaAnswer = normalizeTriviaAnswerRecord(nextAnswerPayload, {
+        roundId: roundIdAtSubmit,
+        playerId,
+      });
+      playerUiState.hasLoadedTriviaAnswer = true;
+      playerUiState.isTriviaAnswerLoading = false;
+      playerUiState.triviaAnswerWarning = "";
+      playerUiState.triviaAnswerUnavailableMessage = "";
+    }
+
+    setTriviaActionMessage();
+    renderPlayerView();
   }
 
-  if (activePlayerRoot && activePlayerSubmitHandler) {
-    activePlayerRoot.removeEventListener("submit", activePlayerSubmitHandler);
-  }
-
-  activePlayerClickHandler = (event) => {
+  activePlayerClickHandler = async (event) => {
     const actionNode = event.target.closest("[data-action]");
 
     if (!actionNode) {
@@ -727,9 +1257,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     if (action === "open-hub-panel") {
       const nextPanel = getHubPanel(actionNode.dataset.panelId || DEFAULT_HUB_PANEL_ID);
 
-      playerUiState.isViewingHubDetail = isStaticPagePanel(nextPanel)
-        || isReviewLinksPanel(nextPanel)
-        || isBottleListPanel(nextPanel);
+      playerUiState.isViewingHubDetail = shouldOpenHubDetailPanel(nextPanel);
       state.patch({ activeHubPanel: nextPanel.id });
       renderPlayerView();
       return;
@@ -754,6 +1282,12 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       playerUiState.isEditingCheckIn = false;
       setPlayerMessage();
       renderPlayerView();
+      return;
+    }
+
+    if (action === "select-trivia-answer") {
+      const answerIndex = Number.parseInt(actionNode.dataset.answerIndex || "", 10);
+      await savePlayerTriviaAnswer(answerIndex);
     }
   };
 
@@ -832,6 +1366,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   activePlayerRoot = playerRoot;
 
   attachRealtimeContentListeners();
+  attachPlayerTriviaRoundListener();
   renderPlayerView();
 
   const restorePlayerPromise = restoreExistingPlayer()

@@ -421,6 +421,14 @@ h1 {
 .trivia-question-list,
 .trivia-random-panel,
 .trivia-count-grid,
+.trivia-live-detail,
+.trivia-live-actions,
+.trivia-selection-summary,
+.trivia-round-summary,
+.trivia-answer-stats,
+.trivia-stats-grid,
+.trivia-question-actions,
+.trivia-answer-grid,
 .admin-button-row,
 .bottle-list-detail,
 .bottle-list-group-grid,
@@ -469,6 +477,11 @@ h1 {
 .trivia-question-card {
   display: grid;
   gap: 14px;
+}
+
+.trivia-question-card[data-selected="true"] {
+  border-color: rgba(15, 118, 110, 0.4);
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.12);
 }
 
 .trivia-question-header {
@@ -530,6 +543,151 @@ h1 {
 .trivia-answer-note {
   color: var(--accent-strong);
   font-weight: 700;
+}
+
+.trivia-selection-summary,
+.trivia-round-summary,
+.trivia-answer-stats,
+.trivia-player-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.trivia-question-actions,
+.trivia-live-actions {
+  align-items: stretch;
+}
+
+.trivia-question-actions .primary-button,
+.trivia-question-actions .secondary-button,
+.trivia-live-actions .primary-button,
+.trivia-live-actions .secondary-button {
+  width: 100%;
+}
+
+.trivia-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trivia-status-row h3,
+.trivia-status-row h4 {
+  margin-bottom: 0;
+}
+
+.trivia-status-badge,
+.trivia-result-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.trivia-status-badge[data-trivia-status="idle"] {
+  background: rgba(100, 116, 139, 0.14);
+  color: #334155;
+}
+
+.trivia-status-badge[data-trivia-status="question_live"] {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-strong);
+}
+
+.trivia-status-badge[data-trivia-status="locked"] {
+  background: rgba(180, 83, 9, 0.14);
+  color: #92400e;
+}
+
+.trivia-status-badge[data-trivia-status="revealed"] {
+  background: rgba(185, 28, 28, 0.14);
+  color: #991b1b;
+}
+
+.trivia-answer-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trivia-answer-button {
+  width: 100%;
+  min-height: 64px;
+  text-align: left;
+  justify-content: flex-start;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+}
+
+.trivia-answer-button[data-selected="true"] {
+  background: rgba(15, 118, 110, 0.12);
+  border-color: rgba(15, 118, 110, 0.34);
+}
+
+.trivia-answer-button[data-correct="true"] {
+  background: rgba(15, 118, 110, 0.14);
+  border-color: rgba(15, 118, 110, 0.42);
+  color: var(--accent-strong);
+}
+
+.trivia-answer-button[data-incorrect="true"] {
+  background: rgba(185, 28, 28, 0.12);
+  border-color: rgba(185, 28, 28, 0.3);
+  color: #991b1b;
+}
+
+.trivia-stats-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trivia-stat-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.trivia-stat-card h5,
+.trivia-stat-card strong,
+.trivia-stat-card p {
+  margin-bottom: 0;
+}
+
+.trivia-stat-card strong {
+  color: var(--accent-strong);
+  font-size: 1.2rem;
+}
+
+.trivia-stat-card[data-correct="true"] {
+  border-color: rgba(15, 118, 110, 0.36);
+}
+
+.trivia-result-pill[data-tone="success"] {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-strong);
+}
+
+.trivia-result-pill[data-tone="info"] {
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent-strong);
+}
+
+.trivia-result-pill[data-tone="warning"] {
+  background: rgba(180, 83, 9, 0.14);
+  color: #92400e;
+}
+
+.trivia-result-pill[data-tone="error"] {
+  background: rgba(185, 28, 28, 0.12);
+  color: #991b1b;
 }
 
 .trivia-empty-panel,
@@ -653,5 +811,14 @@ h1 {
 
   .trivia-random-actions {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .trivia-live-actions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .trivia-answer-grid,
+  .trivia-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

@@ -434,8 +434,10 @@ h1 {
 .bottle-list-group-grid,
 .bottle-list-preview,
 .bingo-live-detail,
+.bingo-host-live-grid,
 .bingo-pool-preview,
 .bingo-card-meta,
+.bingo-recent-draws,
 .validation-panel {
   display: grid;
   gap: 16px;
@@ -703,6 +705,21 @@ h1 {
   color: var(--accent-strong);
 }
 
+.trivia-status-badge[data-bingo-status="cards_locked"] {
+  background: rgba(180, 83, 9, 0.14);
+  color: #92400e;
+}
+
+.trivia-status-badge[data-bingo-status="in_progress"] {
+  background: rgba(3, 105, 161, 0.14);
+  color: #075985;
+}
+
+.trivia-status-badge[data-bingo-status="ended"] {
+  background: rgba(22, 101, 52, 0.14);
+  color: #166534;
+}
+
 .trivia-empty-panel,
 .trivia-random-panel {
   border: 1px solid var(--border);
@@ -746,6 +763,12 @@ h1 {
   box-shadow: 0 10px 22px rgba(31, 24, 13, 0.04);
 }
 
+.bingo-card-tile[data-matched="true"] {
+  border-color: rgba(15, 118, 110, 0.36);
+  background: rgba(232, 253, 248, 0.96);
+  box-shadow: 0 12px 24px rgba(15, 118, 110, 0.12);
+}
+
 .bingo-card-position {
   color: var(--muted);
   font-size: 0.78rem;
@@ -757,6 +780,22 @@ h1 {
 .bingo-card-tile strong {
   font-size: 0.98rem;
   line-height: 1.45;
+}
+
+.bingo-card-match {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bingo-card-tile[data-matched="true"] .bingo-card-match {
+  color: var(--accent-strong);
+}
+
+.bingo-recent-draws h4 {
+  margin-bottom: 0;
 }
 
 .bottle-list-group h3,
@@ -854,6 +893,10 @@ h1 {
 
   .trivia-count-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .bingo-host-live-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .bottle-list-group-grid {

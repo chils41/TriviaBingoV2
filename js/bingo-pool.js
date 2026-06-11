@@ -8,10 +8,16 @@ export const BINGO_CARD_ITEM_COUNT = 9;
 export const BINGO_RECOMMENDED_MINIMUM_POOL_SIZE = 45;
 export const BINGO_ROUND_STATUS_IDLE = "idle";
 export const BINGO_ROUND_STATUS_CARDS_OPEN = "cards_open";
+export const BINGO_ROUND_STATUS_CARDS_LOCKED = "cards_locked";
+export const BINGO_ROUND_STATUS_IN_PROGRESS = "in_progress";
+export const BINGO_ROUND_STATUS_ENDED = "ended";
 
 const BINGO_ROUND_STATUS_LABELS = {
   [BINGO_ROUND_STATUS_IDLE]: "Idle",
   [BINGO_ROUND_STATUS_CARDS_OPEN]: "Cards Open",
+  [BINGO_ROUND_STATUS_CARDS_LOCKED]: "Cards Locked",
+  [BINGO_ROUND_STATUS_IN_PROGRESS]: "In Progress",
+  [BINGO_ROUND_STATUS_ENDED]: "Ended",
 };
 
 function normalizeMultilineValue(value) {
@@ -305,6 +311,43 @@ function normalizeBingoRoundStatus(statusValue) {
   return normalizeTextInput(statusValue).toLowerCase();
 }
 
+function normalizeBingoDrawMethod(methodValue) {
+  const normalizedMethod = normalizeTextInput(methodValue).toLowerCase();
+
+  if (normalizedMethod === "random" || normalizedMethod === "manual") {
+    return normalizedMethod;
+  }
+
+  return "";
+}
+
+function normalizeRoundLastDraw(drawValue) {
+  if (!drawValue || typeof drawValue !== "object" || Array.isArray(drawValue)) {
+    return null;
+  }
+
+  const itemId = sanitizeFirebaseKey(drawValue.itemId);
+  const name = normalizePoolItemName(drawValue.name);
+  const sequence = Number.isInteger(drawValue.sequence) && drawValue.sequence > 0
+    ? drawValue.sequence
+    : 0;
+  const drawnAt = normalizeTextInput(drawValue.drawnAt);
+  const method = normalizeBingoDrawMethod(drawValue.method);
+
+  if (!itemId || !name || !sequence || !drawnAt || !method) {
+    return null;
+  }
+
+  return {
+    roundId: normalizeTextInput(drawValue.roundId),
+    itemId,
+    name,
+    sequence,
+    drawnAt,
+    method,
+  };
+}
+
 export function createEmptyBingoCurrentRound() {
   return {
     roundId: "",
@@ -315,6 +358,11 @@ export function createEmptyBingoCurrentRound() {
     activePool: [],
     cardsLocked: false,
     preparedAt: "",
+    cardsLockedAt: "",
+    startedAt: "",
+    endedAt: "",
+    drawCount: 0,
+    lastDraw: null,
   };
 }
 
@@ -326,7 +374,12 @@ function isEmptyRoundShape(roundShape) {
     && roundShape.actualPoolSize === 0
     && roundShape.activePool.length === 0
     && roundShape.cardsLocked === false
-    && !roundShape.preparedAt;
+    && !roundShape.preparedAt
+    && !roundShape.cardsLockedAt
+    && !roundShape.startedAt
+    && !roundShape.endedAt
+    && roundShape.drawCount === 0
+    && roundShape.lastDraw === null;
 }
 
 export function createBingoRoundId() {
@@ -352,6 +405,7 @@ export function normalizeBingoCurrentRound(roundValue) {
   const collectedPool = collectUniqueItems(
     Array.isArray(roundValue.activePool) ? roundValue.activePool : []
   );
+  const normalizedLastDraw = normalizeRoundLastDraw(roundValue.lastDraw);
   const normalizedRound = {
     roundId: normalizeTextInput(roundValue.roundId),
     status: normalizeBingoRoundStatus(roundValue.status) || BINGO_ROUND_STATUS_IDLE,
@@ -367,6 +421,13 @@ export function normalizeBingoCurrentRound(roundValue) {
     activePool: collectedPool.items,
     cardsLocked: roundValue.cardsLocked === true,
     preparedAt: normalizeTextInput(roundValue.preparedAt),
+    cardsLockedAt: normalizeTextInput(roundValue.cardsLockedAt),
+    startedAt: normalizeTextInput(roundValue.startedAt),
+    endedAt: normalizeTextInput(roundValue.endedAt),
+    drawCount: Number.isInteger(roundValue.drawCount) && roundValue.drawCount >= 0
+      ? roundValue.drawCount
+      : 0,
+    lastDraw: normalizedLastDraw,
   };
 
   if (isEmptyRoundShape(normalizedRound)) {
@@ -380,7 +441,13 @@ export function normalizeBingoCurrentRound(roundValue) {
 
   const errors = [...collectedPool.errors];
 
-  if (![BINGO_ROUND_STATUS_IDLE, BINGO_ROUND_STATUS_CARDS_OPEN].includes(normalizedRound.status)) {
+  if (![
+    BINGO_ROUND_STATUS_IDLE,
+    BINGO_ROUND_STATUS_CARDS_OPEN,
+    BINGO_ROUND_STATUS_CARDS_LOCKED,
+    BINGO_ROUND_STATUS_IN_PROGRESS,
+    BINGO_ROUND_STATUS_ENDED,
+  ].includes(normalizedRound.status)) {
     errors.push(`Round status "${normalizedRound.status || "(missing)"}" is invalid.`);
   }
 
@@ -412,6 +479,52 @@ export function normalizeBingoCurrentRound(roundValue) {
     if (!normalizedRound.preparedAt) {
       errors.push("Bingo round is missing preparedAt.");
     }
+
+    if (normalizedRound.status === BINGO_ROUND_STATUS_CARDS_OPEN && normalizedRound.cardsLocked) {
+      errors.push("Bingo round cards_open status cannot have cardsLocked set to true.");
+    }
+
+    if (
+      [
+        BINGO_ROUND_STATUS_CARDS_LOCKED,
+        BINGO_ROUND_STATUS_IN_PROGRESS,
+        BINGO_ROUND_STATUS_ENDED,
+      ].includes(normalizedRound.status)
+      && normalizedRound.cardsLocked !== true
+    ) {
+      errors.push(`Bingo round status "${normalizedRound.status}" requires cardsLocked to be true.`);
+    }
+
+    if (
+      [
+        BINGO_ROUND_STATUS_CARDS_LOCKED,
+        BINGO_ROUND_STATUS_IN_PROGRESS,
+        BINGO_ROUND_STATUS_ENDED,
+      ].includes(normalizedRound.status)
+      && !normalizedRound.cardsLockedAt
+    ) {
+      errors.push(`Bingo round status "${normalizedRound.status}" is missing cardsLockedAt.`);
+    }
+
+    if (normalizedRound.status === BINGO_ROUND_STATUS_IN_PROGRESS && !normalizedRound.startedAt) {
+      errors.push(`Bingo round status "${normalizedRound.status}" is missing startedAt.`);
+    }
+
+    if (normalizedRound.status === BINGO_ROUND_STATUS_ENDED && !normalizedRound.endedAt) {
+      errors.push("Bingo round status \"ended\" is missing endedAt.");
+    }
+
+    if (normalizedRound.drawCount > 0 && !normalizedRound.lastDraw) {
+      errors.push("Bingo round drawCount is greater than zero but lastDraw is invalid or missing.");
+    }
+
+    if (
+      normalizedRound.lastDraw
+      && normalizedRound.drawCount > 0
+      && normalizedRound.lastDraw.sequence !== normalizedRound.drawCount
+    ) {
+      errors.push("Bingo round lastDraw sequence does not match drawCount.");
+    }
   }
 
   if (errors.length > 0) {
@@ -439,6 +552,11 @@ export function buildBingoCurrentRoundPayload({
   activePool = [],
   cardsLocked = false,
   preparedAt = "",
+  cardsLockedAt = "",
+  startedAt = "",
+  endedAt = "",
+  drawCount = 0,
+  lastDraw = null,
 } = {}) {
   const normalizedActivePool = collectUniqueItems(activePool).items;
   const payload = {
@@ -450,6 +568,11 @@ export function buildBingoCurrentRoundPayload({
     activePool: normalizedActivePool,
     cardsLocked,
     preparedAt: normalizeTextInput(preparedAt) || new Date().toISOString(),
+    cardsLockedAt: normalizeTextInput(cardsLockedAt),
+    startedAt: normalizeTextInput(startedAt),
+    endedAt: normalizeTextInput(endedAt),
+    drawCount: Number.isInteger(drawCount) && drawCount >= 0 ? drawCount : 0,
+    lastDraw: normalizeRoundLastDraw(lastDraw),
   };
   const normalizedRound = normalizeBingoCurrentRound(payload);
 
@@ -466,6 +589,13 @@ export function buildBingoCurrentRoundPayload({
     activePool: normalizedRound.activePool.slice(),
     cardsLocked: normalizedRound.cardsLocked,
     preparedAt: normalizedRound.preparedAt,
+    cardsLockedAt: normalizedRound.cardsLockedAt,
+    startedAt: normalizedRound.startedAt,
+    endedAt: normalizedRound.endedAt,
+    drawCount: normalizedRound.drawCount,
+    lastDraw: normalizedRound.lastDraw
+      ? { ...normalizedRound.lastDraw }
+      : null,
   };
 }
 

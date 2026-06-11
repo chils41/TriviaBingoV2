@@ -14,6 +14,15 @@ import {
   reconstructBottleListSource,
 } from "./bottle-list.js";
 import {
+  BINGO_CARD_ITEM_COUNT,
+  BINGO_RECOMMENDED_MINIMUM_POOL_SIZE,
+  BINGO_SOURCE_POOL_PATH,
+  buildBingoSourcePoolPayload,
+  normalizeBingoSourcePool,
+  parseBingoSourcePoolText,
+  reconstructBingoSourcePoolText,
+} from "./bingo-pool.js";
+import {
   buildTriviaQuestionPoolPayload,
   normalizeTriviaQuestionPool,
   parseTriviaQuestionPoolJson,
@@ -105,6 +114,25 @@ function renderTriviaQuestionValidationErrors(errors) {
   return `
     <div class="notice-panel validation-panel" data-tone="error" aria-live="polite">
       <p class="validation-title">Fix these Trivia Question Pool issues before replacing:</p>
+      <ul class="validation-list">
+        ${errorItemsMarkup}
+      </ul>
+    </div>
+  `;
+}
+
+function renderBingoSourcePoolValidationErrors(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return "";
+  }
+
+  const errorItemsMarkup = errors
+    .map((error) => `<li>Line ${escapeHtml(error.lineNumber)}: ${escapeHtml(error.message)}</li>`)
+    .join("");
+
+  return `
+    <div class="notice-panel validation-panel" data-tone="error" aria-live="polite">
+      <p class="validation-title">Fix these Bingo pool lines before replacing:</p>
       <ul class="validation-list">
         ${errorItemsMarkup}
       </ul>
@@ -340,6 +368,84 @@ function renderTriviaQuestionPoolPreview(previewNode, previewResult) {
   previewNode.append(previewSectionNode);
 }
 
+function renderBingoSourcePoolCountGrid(countsNode, sourcePoolValue) {
+  if (!countsNode) {
+    return;
+  }
+
+  countsNode.innerHTML = "";
+
+  [
+    { label: "Unique Items", value: sourcePoolValue?.count || 0 },
+    { label: `Min ${BINGO_CARD_ITEM_COUNT}`, value: sourcePoolValue?.count >= BINGO_CARD_ITEM_COUNT ? "Yes" : "No" },
+    { label: "45+ Ready", value: sourcePoolValue?.count >= BINGO_RECOMMENDED_MINIMUM_POOL_SIZE ? "Yes" : "No" },
+  ].forEach((countDefinition) => {
+    const countNode = document.createElement("article");
+    const valueNode = document.createElement("strong");
+    const labelNode = document.createElement("span");
+
+    countNode.className = "trivia-count-card";
+    valueNode.textContent = String(countDefinition.value);
+    labelNode.textContent = countDefinition.label;
+    countNode.append(valueNode, labelNode);
+    countsNode.append(countNode);
+  });
+}
+
+function renderBingoSourcePoolPreview(previewNode, previewResult) {
+  if (!previewNode) {
+    return;
+  }
+
+  previewNode.innerHTML = "";
+
+  if (!previewResult) {
+    return;
+  }
+
+  const previewSectionNode = document.createElement("section");
+  const previewHeaderNode = document.createElement("div");
+  const eyebrowNode = document.createElement("p");
+  const titleNode = document.createElement("h4");
+  const copyNode = document.createElement("p");
+  const listNode = document.createElement("ol");
+
+  previewSectionNode.className = "bingo-pool-preview";
+  previewHeaderNode.className = "trivia-preview-header";
+  eyebrowNode.className = "eyebrow";
+  eyebrowNode.textContent = "Preview";
+  titleNode.textContent = "Bingo Bottle Pool Preview";
+  copyNode.className = "player-copy";
+  listNode.className = "bingo-source-item-list";
+  previewHeaderNode.append(eyebrowNode, titleNode, copyNode);
+  previewSectionNode.append(previewHeaderNode);
+
+  if (previewResult.isEmpty) {
+    const emptyPanelNode = document.createElement("div");
+    const emptyCopyNode = document.createElement("p");
+
+    copyNode.textContent = "This preview is empty.";
+    emptyPanelNode.className = "hub-panel bottle-list-empty-panel";
+    emptyCopyNode.textContent = "Blank or empty input will not overwrite the saved Bingo pool. Use Clear Bingo Pool if you intentionally want an empty pool.";
+    emptyPanelNode.append(emptyCopyNode);
+    previewSectionNode.append(emptyPanelNode);
+    previewNode.append(previewSectionNode);
+    return;
+  }
+
+  copyNode.textContent = `Showing ${previewResult.count} unique items in saved order.`;
+
+  previewResult.items.forEach((itemValue) => {
+    const itemNode = document.createElement("li");
+
+    itemNode.textContent = itemValue.name;
+    listNode.append(itemNode);
+  });
+
+  previewSectionNode.append(listNode);
+  previewNode.append(previewSectionNode);
+}
+
 export function initAdminPage({ firebase, state, renderStatus }) {
   const adminRoot = document.querySelector(ADMIN_ROOT_SELECTOR);
   const adminUiState = {
@@ -347,18 +453,24 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     isLoading: true,
     isSavingPage: false,
     isSavingReviewLinks: false,
+    isSavingBingoSourcePool: false,
+    isClearingBingoSourcePool: false,
     isSavingBottleList: false,
     isClearingBottleList: false,
     isSavingQuestionPool: false,
     isClearingQuestionPool: false,
     pages: normalizeStaticPages(null),
     reviewLinks: normalizeReviewLinks(null),
+    bingoSourcePool: normalizeBingoSourcePool(null),
     bottleList: normalizeBottleList(null),
     questionPool: normalizeTriviaQuestionPool(null),
+    bingoSourcePoolDraft: "",
     bottleListDraft: "",
     questionPoolDraft: TRIVIA_QUESTION_POOL_SAFE_EXAMPLE_JSON,
+    bingoSourcePoolPreview: null,
     bottleListPreview: null,
     questionPoolPreview: null,
+    bingoSourcePoolValidationErrors: [],
     bottleListValidationErrors: [],
     questionPoolValidationErrors: [],
     pageMessage: {
@@ -366,6 +478,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       tone: "info",
     },
     reviewMessage: {
+      text: "",
+      tone: "info",
+    },
+    bingoSourcePoolMessage: {
       text: "",
       tone: "info",
     },
@@ -385,6 +501,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
   function setReviewMessage(text = "", tone = "info") {
     adminUiState.reviewMessage = { text, tone };
+  }
+
+  function setBingoSourcePoolMessage(text = "", tone = "info") {
+    adminUiState.bingoSourcePoolMessage = { text, tone };
   }
 
   function setBottleListMessage(text = "", tone = "info") {
@@ -416,6 +536,27 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     };
   }
 
+  function getEditableBingoSourcePoolSource(sourcePoolValue, rawSourcePoolValue) {
+    if (normalizeTextInput(sourcePoolValue.sourceText)) {
+      return {
+        draft: sourcePoolValue.sourceText,
+        source: sourcePoolValue.isValid ? "saved" : "invalid",
+      };
+    }
+
+    if (sourcePoolValue.items.length > 0) {
+      return {
+        draft: reconstructBingoSourcePoolText(sourcePoolValue),
+        source: sourcePoolValue.isValid ? "reconstructed" : "invalid_reconstructed",
+      };
+    }
+
+    return {
+      draft: "",
+      source: rawSourcePoolValue === null ? "missing" : "empty",
+    };
+  }
+
   function getEditableTriviaQuestionPoolSource(questionPoolValue, rawQuestionPoolValue) {
     if (rawQuestionPoolValue === null) {
       return {
@@ -442,6 +583,13 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     adminUiState.bottleListDraft = String(formData.get("sourceText") ?? "");
     return adminUiState.bottleListDraft;
+  }
+
+  function readBingoSourcePoolDraft(formNode) {
+    const formData = new FormData(formNode);
+
+    adminUiState.bingoSourcePoolDraft = String(formData.get("bingoSourceText") ?? "");
+    return adminUiState.bingoSourcePoolDraft;
   }
 
   function readQuestionPoolDraft(formNode) {
@@ -471,6 +619,34 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     const groupLabel = previewResult.groups.length === 1 ? "group" : "groups";
 
     setBottleListMessage(`Preview ready: ${previewResult.itemCount} ${bottleLabel} across ${previewResult.groups.length} ${groupLabel}.`, "success");
+    return true;
+  }
+
+  function applyBingoSourcePoolPreviewState(previewResult) {
+    adminUiState.bingoSourcePoolValidationErrors = previewResult.errors;
+    adminUiState.bingoSourcePoolPreview = previewResult;
+
+    if (previewResult.errors.length > 0) {
+      setBingoSourcePoolMessage("Fix the Bingo pool validation errors below before replacing the saved pool.", "error");
+      return false;
+    }
+
+    if (previewResult.isEmpty) {
+      setBingoSourcePoolMessage("Blank or empty Bingo pool text will not overwrite the saved pool. Use Clear Bingo Pool if you intentionally want an empty pool.", "warning");
+      return false;
+    }
+
+    if (!previewResult.hasMinimumItems) {
+      setBingoSourcePoolMessage(`At least ${BINGO_CARD_ITEM_COUNT} unique Bingo items are required before replacing the saved pool.`, "error");
+      return false;
+    }
+
+    if (previewResult.warning) {
+      setBingoSourcePoolMessage(`Preview ready with warning: ${previewResult.count} unique items. ${previewResult.warning}`, "warning");
+      return true;
+    }
+
+    setBingoSourcePoolMessage(`Preview ready: ${previewResult.count} unique Bingo items.`, "success");
     return true;
   }
 
@@ -540,9 +716,13 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         </label>
       `)
       .join("");
+    const isBingoSourcePoolBusy = adminUiState.isLoading
+      || adminUiState.isSavingBingoSourcePool
+      || adminUiState.isClearingBingoSourcePool;
     const isBottleListBusy = adminUiState.isLoading || adminUiState.isSavingBottleList || adminUiState.isClearingBottleList;
     const isQuestionPoolBusy = adminUiState.isLoading || adminUiState.isSavingQuestionPool || adminUiState.isClearingQuestionPool;
     const currentQuestionPoolCounts = adminUiState.questionPoolPreview?.counts || adminUiState.questionPool.counts;
+    const currentBingoSourcePoolCounts = adminUiState.bingoSourcePoolPreview || adminUiState.bingoSourcePool;
 
     contentNode.innerHTML = `
       <div class="admin-sections">
@@ -637,6 +817,48 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         <section class="player-section admin-section">
           <div class="player-section-header">
             <div>
+              <p class="eyebrow">Bingo Bottle Pool</p>
+              <h3>Bingo Bottle Pool</h3>
+              <p class="player-copy">This pool is used only for Bingo cards and is separate from the public Bottle List.</p>
+            </div>
+          </div>
+          ${renderSectionNotice(adminUiState.bingoSourcePoolMessage)}
+          ${renderBingoSourcePoolValidationErrors(adminUiState.bingoSourcePoolValidationErrors)}
+          <form class="player-form admin-editor-form" data-admin-form="bingo-source-pool" novalidate>
+            <label class="form-field" for="admin-bingo-source-pool">
+              <span>One Item Per Line</span>
+              <textarea
+                id="admin-bingo-source-pool"
+                name="bingoSourceText"
+                class="form-input form-textarea"
+                rows="14"
+                data-bingo-source-pool-input
+                ${isBingoSourcePoolBusy ? "disabled" : ""}
+              ></textarea>
+            </label>
+            <p class="admin-helper-copy">Blank lines are ignored. Duplicate names are rejected after trimming and comparing case-insensitively. Replace only updates <code>/bingo/sourcePool</code> and does not alter <code>/bingo/live</code>.</p>
+            <div class="trivia-count-grid" data-admin-bingo-source-pool-counts></div>
+            <div class="admin-meta">
+              Last saved: <span data-bingo-source-pool-updated-at>${escapeHtml(formatUpdatedAt(adminUiState.bingoSourcePool.updatedAt))}</span>
+            </div>
+            <div class="admin-button-row">
+              <button type="button" class="secondary-button" data-action="validate-bingo-source-pool" ${isBingoSourcePoolBusy ? "disabled" : ""}>
+                Validate / Preview
+              </button>
+              <button type="submit" class="primary-button" ${isBingoSourcePoolBusy ? "disabled" : ""}>
+                ${adminUiState.isSavingBingoSourcePool ? "Replacing Bingo Pool..." : "Replace Bingo Pool"}
+              </button>
+              <button type="button" class="secondary-button" data-action="clear-bingo-source-pool" ${isBingoSourcePoolBusy ? "disabled" : ""}>
+                ${adminUiState.isClearingBingoSourcePool ? "Clearing Bingo Pool..." : "Clear Bingo Pool"}
+              </button>
+            </div>
+          </form>
+          <div data-bingo-source-pool-preview></div>
+        </section>
+
+        <section class="player-section admin-section">
+          <div class="player-section-header">
+            <div>
               <p class="eyebrow">Public Bottle List</p>
               <h3>Public Bottle List</h3>
               <p class="player-copy">Paste, validate, preview, and publish the public raffle or event bottle list for players. This section is separate from the future Bingo bottle list.</p>
@@ -710,6 +932,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     const titleField = contentNode.querySelector("[data-static-page-title-input]");
     const contentField = contentNode.querySelector("[data-static-page-content-input]");
     const questionPoolField = contentNode.querySelector("[data-trivia-question-pool-input]");
+    const bingoSourcePoolField = contentNode.querySelector("[data-bingo-source-pool-input]");
     const bottleListSourceField = contentNode.querySelector("[data-bottle-list-source-input]");
 
     if (titleField instanceof HTMLInputElement) {
@@ -722,6 +945,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     if (questionPoolField instanceof HTMLTextAreaElement) {
       questionPoolField.value = adminUiState.questionPoolDraft;
+    }
+
+    if (bingoSourcePoolField instanceof HTMLTextAreaElement) {
+      bingoSourcePoolField.value = adminUiState.bingoSourcePoolDraft;
     }
 
     if (bottleListSourceField instanceof HTMLTextAreaElement) {
@@ -737,9 +964,17 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     });
 
     renderTriviaCountGrid(contentNode.querySelector("[data-admin-trivia-counts]"), currentQuestionPoolCounts);
+    renderBingoSourcePoolCountGrid(
+      contentNode.querySelector("[data-admin-bingo-source-pool-counts]"),
+      currentBingoSourcePoolCounts
+    );
     renderTriviaQuestionPoolPreview(
       contentNode.querySelector("[data-trivia-question-pool-preview]"),
       adminUiState.questionPoolPreview
+    );
+    renderBingoSourcePoolPreview(
+      contentNode.querySelector("[data-bingo-source-pool-preview]"),
+      adminUiState.bingoSourcePoolPreview
     );
   }
 
@@ -747,32 +982,56 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     adminUiState.isLoading = true;
     setPageMessage();
     setReviewMessage();
+    setBingoSourcePoolMessage();
     setBottleListMessage();
     setQuestionPoolMessage();
     renderAdminContent();
 
-    const [pagesValue, reviewLinksValue, bottleListValue, questionPoolValue] = await Promise.all([
+    const [pagesValue, reviewLinksValue, bingoSourcePoolValue, bottleListValue, questionPoolValue] = await Promise.all([
       firebase.readEventData("pages"),
       firebase.readEventData("reviewLinks"),
+      firebase.readEventData(BINGO_SOURCE_POOL_PATH),
       firebase.readEventData(PUBLIC_BOTTLE_LIST_PATH),
       firebase.readEventData(TRIVIA_QUESTION_POOL_PATH),
     ]);
 
     adminUiState.pages = normalizeStaticPages(pagesValue);
     adminUiState.reviewLinks = normalizeReviewLinks(reviewLinksValue);
+    adminUiState.bingoSourcePool = normalizeBingoSourcePool(bingoSourcePoolValue);
     adminUiState.bottleList = normalizeBottleList(bottleListValue);
     adminUiState.questionPool = normalizeTriviaQuestionPool(questionPoolValue);
+    adminUiState.bingoSourcePoolValidationErrors = [];
     adminUiState.bottleListValidationErrors = [];
     adminUiState.questionPoolValidationErrors = [];
+    adminUiState.bingoSourcePoolPreview = null;
     adminUiState.bottleListPreview = null;
     adminUiState.questionPoolPreview = null;
 
+    const editableBingoSourcePool = getEditableBingoSourcePoolSource(
+      adminUiState.bingoSourcePool,
+      bingoSourcePoolValue
+    );
     const editableBottleList = getEditableBottleListSource(adminUiState.bottleList);
     const editableQuestionPool = getEditableTriviaQuestionPoolSource(adminUiState.questionPool, questionPoolValue);
     const firebaseStatus = firebase.getStatus();
 
+    adminUiState.bingoSourcePoolDraft = editableBingoSourcePool.draft;
     adminUiState.bottleListDraft = editableBottleList.draft;
     adminUiState.questionPoolDraft = editableQuestionPool.draft;
+
+    if (bingoSourcePoolValue === null && firebaseStatus.error) {
+      setBingoSourcePoolMessage(firebaseStatus.message || "Bingo pool data is temporarily unavailable.", "error");
+    } else if (editableBingoSourcePool.source === "missing") {
+      setBingoSourcePoolMessage("No Bingo bottle pool is saved yet. Add one item per line, then validate and replace the pool.", "info");
+    } else if (editableBingoSourcePool.source === "saved") {
+      setBingoSourcePoolMessage("Loaded the saved Bingo bottle pool from Firebase.", "info");
+    } else if (editableBingoSourcePool.source === "reconstructed") {
+      setBingoSourcePoolMessage("Loaded the saved Bingo bottle pool by reconstructing text from structured items.", "info");
+    } else if (editableBingoSourcePool.source === "empty") {
+      setBingoSourcePoolMessage("Loaded the saved empty Bingo bottle pool from Firebase. Replace it with at least 9 items or keep it empty with Clear Bingo Pool.", "info");
+    } else if (editableBingoSourcePool.source === "invalid" || editableBingoSourcePool.source === "invalid_reconstructed") {
+      setBingoSourcePoolMessage("The saved Bingo bottle pool data is invalid. Review the loaded text and replace it before Hosts prepare a round.", "error");
+    }
 
     if (editableBottleList.wasReconstructed) {
       setBottleListMessage("Loaded the saved bottle list by reconstructing editable text from structured data.", "info");
@@ -875,6 +1134,15 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     return previewResult;
   }
 
+  function validateBingoSourcePool(formNode) {
+    const sourceText = readBingoSourcePoolDraft(formNode);
+    const previewResult = parseBingoSourcePoolText(sourceText);
+
+    applyBingoSourcePoolPreviewState(previewResult);
+    renderAdminContent();
+    return previewResult;
+  }
+
   function validateQuestionPool(formNode) {
     const sourceText = readQuestionPoolDraft(formNode);
     const previewResult = parseTriviaQuestionPoolJson(sourceText);
@@ -919,6 +1187,52 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     adminUiState.bottleListValidationErrors = [];
     adminUiState.bottleListPreview = previewResult;
     setBottleListMessage("Public Bottle List saved to Firebase.", "success");
+    renderAdminContent();
+  }
+
+  async function saveBingoSourcePool(formNode) {
+    const sourceText = readBingoSourcePoolDraft(formNode);
+    const previewResult = parseBingoSourcePoolText(sourceText);
+    const canReplace = applyBingoSourcePoolPreviewState(previewResult);
+
+    if (!canReplace) {
+      renderAdminContent();
+      return;
+    }
+
+    const replaceConfirmed = window.confirm(
+      "Replace the saved Bingo bottle pool in Firebase? This updates only /bingo/sourcePool and does not alter any prepared round under /bingo/live."
+    );
+
+    if (!replaceConfirmed) {
+      renderAdminContent();
+      return;
+    }
+
+    adminUiState.isSavingBingoSourcePool = true;
+    setBingoSourcePoolMessage();
+    renderAdminContent();
+
+    const nextBingoSourcePoolPayload = buildBingoSourcePoolPayload({
+      sourceText: previewResult.sourceText,
+      items: previewResult.items,
+      updatedAt: new Date().toISOString(),
+    });
+    const saveSucceeded = await firebase.writeEventData(BINGO_SOURCE_POOL_PATH, nextBingoSourcePoolPayload);
+
+    adminUiState.isSavingBingoSourcePool = false;
+
+    if (!saveSucceeded) {
+      setBingoSourcePoolMessage(firebase.getStatus().message || "We could not replace the Bingo bottle pool right now. Please try again.", "error");
+      renderAdminContent();
+      return;
+    }
+
+    adminUiState.bingoSourcePool = normalizeBingoSourcePool(nextBingoSourcePoolPayload);
+    adminUiState.bingoSourcePoolDraft = nextBingoSourcePoolPayload.sourceText;
+    adminUiState.bingoSourcePoolValidationErrors = [];
+    adminUiState.bingoSourcePoolPreview = previewResult;
+    setBingoSourcePoolMessage("Bingo bottle pool replaced in Firebase.", "success");
     renderAdminContent();
   }
 
@@ -1043,6 +1357,42 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     renderAdminContent();
   }
 
+  async function clearBingoSourcePool() {
+    const clearConfirmed = window.confirm(
+      "Clear the saved Bingo bottle pool from Firebase? This only clears /bingo/sourcePool and does not alter /bingo/live/currentRound or any saved player cards."
+    );
+
+    if (!clearConfirmed) {
+      return;
+    }
+
+    adminUiState.isClearingBingoSourcePool = true;
+    setBingoSourcePoolMessage();
+    renderAdminContent();
+
+    const emptyBingoSourcePoolPayload = buildBingoSourcePoolPayload({
+      sourceText: "",
+      items: [],
+      updatedAt: new Date().toISOString(),
+    });
+    const clearSucceeded = await firebase.writeEventData(BINGO_SOURCE_POOL_PATH, emptyBingoSourcePoolPayload);
+
+    adminUiState.isClearingBingoSourcePool = false;
+
+    if (!clearSucceeded) {
+      setBingoSourcePoolMessage(firebase.getStatus().message || "We could not clear the Bingo bottle pool right now. Please try again.", "error");
+      renderAdminContent();
+      return;
+    }
+
+    adminUiState.bingoSourcePool = normalizeBingoSourcePool(emptyBingoSourcePoolPayload);
+    adminUiState.bingoSourcePoolDraft = "";
+    adminUiState.bingoSourcePoolValidationErrors = [];
+    adminUiState.bingoSourcePoolPreview = null;
+    setBingoSourcePoolMessage("Bingo bottle pool cleared from Firebase.", "success");
+    renderAdminContent();
+  }
+
   if (activeAdminRoot && activeAdminClickHandler) {
     activeAdminRoot.removeEventListener("click", activeAdminClickHandler);
   }
@@ -1091,6 +1441,21 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         return;
       }
 
+      if (actionNode.dataset.action === "validate-bingo-source-pool") {
+        const formNode = actionNode.closest('[data-admin-form="bingo-source-pool"]');
+
+        if (formNode instanceof HTMLFormElement) {
+          validateBingoSourcePool(formNode);
+        }
+
+        return;
+      }
+
+      if (actionNode.dataset.action === "clear-bingo-source-pool") {
+        await clearBingoSourcePool();
+        return;
+      }
+
       if (actionNode.dataset.action === "validate-bottle-list") {
         const formNode = actionNode.closest('[data-admin-form="public-bottle-list"]');
 
@@ -1114,6 +1479,14 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         adminUiState.questionPoolValidationErrors = [];
         adminUiState.questionPoolPreview = null;
         setQuestionPoolMessage();
+        return;
+      }
+
+      if (inputNode instanceof HTMLTextAreaElement && inputNode.dataset.bingoSourcePoolInput !== undefined) {
+        adminUiState.bingoSourcePoolDraft = inputNode.value;
+        adminUiState.bingoSourcePoolValidationErrors = [];
+        adminUiState.bingoSourcePoolPreview = null;
+        setBingoSourcePoolMessage();
         return;
       }
 
@@ -1149,6 +1522,12 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       if (formNode.dataset.adminForm === "trivia-question-pool") {
         event.preventDefault();
         await saveQuestionPool(formNode);
+        return;
+      }
+
+      if (formNode.dataset.adminForm === "bingo-source-pool") {
+        event.preventDefault();
+        await saveBingoSourcePool(formNode);
         return;
       }
 

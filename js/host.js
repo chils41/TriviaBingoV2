@@ -1,5 +1,20 @@
 import { initTriviaModule } from "./trivia.js";
 import { initBingoModule } from "./bingo.js";
+import {
+  BINGO_CARD_ITEM_COUNT,
+  BINGO_LIVE_CURRENT_ROUND_PATH,
+  BINGO_RECOMMENDED_MINIMUM_POOL_SIZE,
+  BINGO_SOURCE_POOL_PATH,
+  buildBingoCurrentRoundPayload,
+  countRegisteredPlayers,
+  createEmptyBingoCurrentRound,
+  getBingoRoundStatusLabel,
+  getBingoTargetPoolSize,
+  hasPreparedBingoRound,
+  normalizeBingoCurrentRound,
+  normalizeBingoSourcePool,
+  sampleBingoItems,
+} from "./bingo-pool.js";
 import { initRoleProtectedPage } from "./role-access.js";
 import {
   getRandomQuestion,
@@ -26,10 +41,6 @@ const HOST_ROOT_SELECTOR = "#host-app";
 
 const HOST_RESERVED_CARDS = [
   {
-    title: "Bingo Controls",
-    description: "Future bingo flow controls will stay inside the Host console.",
-  },
-  {
     title: "Display Screen",
     description: "Future display coordination shortcuts will appear here for live event use.",
   },
@@ -51,6 +62,9 @@ let activeHostClickHandler = null;
 let unsubscribeTriviaPoolListener = null;
 let unsubscribeCurrentRoundListener = null;
 let unsubscribeHostAnswersListener = null;
+let unsubscribeBingoSourcePoolListener = null;
+let unsubscribeBingoCurrentRoundListener = null;
+let unsubscribeRegisteredPlayersListener = null;
 let hasBoundHostBeforeUnload = false;
 
 function renderReservedCards(cards) {
@@ -201,9 +215,24 @@ function cleanupHostTriviaController() {
     unsubscribeHostAnswersListener();
   }
 
+  if (typeof unsubscribeBingoSourcePoolListener === "function") {
+    unsubscribeBingoSourcePoolListener();
+  }
+
+  if (typeof unsubscribeBingoCurrentRoundListener === "function") {
+    unsubscribeBingoCurrentRoundListener();
+  }
+
+  if (typeof unsubscribeRegisteredPlayersListener === "function") {
+    unsubscribeRegisteredPlayersListener();
+  }
+
   unsubscribeTriviaPoolListener = null;
   unsubscribeCurrentRoundListener = null;
   unsubscribeHostAnswersListener = null;
+  unsubscribeBingoSourcePoolListener = null;
+  unsubscribeBingoCurrentRoundListener = null;
+  unsubscribeRegisteredPlayersListener = null;
 
   if (activeHostRoot && activeHostClickHandler) {
     activeHostRoot.removeEventListener("click", activeHostClickHandler);
@@ -244,6 +273,26 @@ export function initHostPage({ firebase, state, renderStatus }) {
     answersUnavailableMessage: "",
     answersWarning: "",
     isRoundActionBusy: false,
+    bingoSourcePool: normalizeBingoSourcePool(null),
+    hasLoadedBingoSourcePool: false,
+    isBingoSourcePoolLoading: true,
+    bingoSourcePoolUnavailableMessage: "",
+    bingoSourcePoolWarning: "",
+    registeredPlayerCount: 0,
+    hasLoadedRegisteredPlayers: false,
+    isRegisteredPlayersLoading: true,
+    registeredPlayersUnavailableMessage: "",
+    registeredPlayersWarning: "",
+    bingoCurrentRound: normalizeBingoCurrentRound(null),
+    hasLoadedBingoCurrentRound: false,
+    isBingoCurrentRoundLoading: true,
+    bingoCurrentRoundUnavailableMessage: "",
+    bingoCurrentRoundWarning: "",
+    isPreparingBingoRound: false,
+    bingoPreparationMessage: {
+      text: "",
+      tone: "info",
+    },
   };
 
   cleanupHostTriviaController();
@@ -255,6 +304,10 @@ export function initHostPage({ firebase, state, renderStatus }) {
 
   function setControllerMessage(text = "", tone = "info") {
     hostUiState.controllerMessage = { text, tone };
+  }
+
+  function setBingoPreparationMessage(text = "", tone = "info") {
+    hostUiState.bingoPreparationMessage = { text, tone };
   }
 
   function getActiveContentNode() {
@@ -297,6 +350,22 @@ export function initHostPage({ firebase, state, renderStatus }) {
     hostUiState.isAnswerStatsLoading = false;
     hostUiState.answersUnavailableMessage = "";
     hostUiState.answersWarning = "";
+  }
+
+  function getCurrentBingoTargetPoolSize() {
+    return getBingoTargetPoolSize(hostUiState.registeredPlayerCount);
+  }
+
+  function createSummaryCountCard({ label, value }) {
+    const countNode = document.createElement("article");
+    const valueNode = document.createElement("strong");
+    const labelNode = document.createElement("span");
+
+    countNode.className = "trivia-count-card";
+    valueNode.textContent = String(value);
+    labelNode.textContent = label;
+    countNode.append(valueNode, labelNode);
+    return countNode;
   }
 
   function detachHostAnswersListener({ clearStats = true, roundForStats = hostUiState.currentRound } = {}) {
@@ -745,6 +814,148 @@ export function initHostPage({ firebase, state, renderStatus }) {
     statsNode.append(statsPanelNode);
   }
 
+  function renderBingoPreparationNotices(noticesNode) {
+    if (!noticesNode) {
+      return;
+    }
+
+    noticesNode.innerHTML = "";
+
+    if (hostUiState.bingoPreparationMessage.text) {
+      noticesNode.append(createNoticeNode(hostUiState.bingoPreparationMessage.text, hostUiState.bingoPreparationMessage.tone));
+    }
+
+    if (hostUiState.isBingoSourcePoolLoading && !hostUiState.hasLoadedBingoSourcePool) {
+      noticesNode.append(createNoticeNode("Loading the Bingo bottle pool...", "info"));
+    } else if (hostUiState.bingoSourcePoolUnavailableMessage && !hostUiState.hasLoadedBingoSourcePool) {
+      noticesNode.append(createNoticeNode(hostUiState.bingoSourcePoolUnavailableMessage, "warning"));
+    } else if (hostUiState.bingoSourcePoolWarning) {
+      noticesNode.append(createNoticeNode(hostUiState.bingoSourcePoolWarning, "warning"));
+    }
+
+    if (hostUiState.isRegisteredPlayersLoading && !hostUiState.hasLoadedRegisteredPlayers) {
+      noticesNode.append(createNoticeNode("Loading the current registered player count...", "info"));
+    } else if (hostUiState.registeredPlayersUnavailableMessage && !hostUiState.hasLoadedRegisteredPlayers) {
+      noticesNode.append(createNoticeNode(hostUiState.registeredPlayersUnavailableMessage, "warning"));
+    } else if (hostUiState.registeredPlayersWarning) {
+      noticesNode.append(createNoticeNode(hostUiState.registeredPlayersWarning, "warning"));
+    }
+
+    if (hostUiState.isBingoCurrentRoundLoading && !hostUiState.hasLoadedBingoCurrentRound) {
+      noticesNode.append(createNoticeNode("Loading the current Bingo round...", "info"));
+    } else if (hostUiState.bingoCurrentRoundUnavailableMessage && !hostUiState.hasLoadedBingoCurrentRound) {
+      noticesNode.append(createNoticeNode(hostUiState.bingoCurrentRoundUnavailableMessage, "warning"));
+    } else if (hostUiState.bingoCurrentRoundWarning) {
+      noticesNode.append(createNoticeNode(hostUiState.bingoCurrentRoundWarning, "warning"));
+    }
+
+    if (hostUiState.hasLoadedBingoSourcePool) {
+      const sourcePoolCount = hostUiState.bingoSourcePool.count;
+      const targetPoolSize = getCurrentBingoTargetPoolSize();
+
+      if (sourcePoolCount === 0) {
+        noticesNode.append(createNoticeNode("No Bingo bottle pool has been uploaded yet.", "warning"));
+      } else if (sourcePoolCount < BINGO_CARD_ITEM_COUNT) {
+        noticesNode.append(createNoticeNode(`At least ${BINGO_CARD_ITEM_COUNT} unique Bingo items are required before a round can be prepared.`, "warning"));
+      } else if (sourcePoolCount < targetPoolSize) {
+        noticesNode.append(createNoticeNode(`The current Bingo pool has ${sourcePoolCount} items and cannot meet the current target of ${targetPoolSize}. Preparing a round will use all available items.`, "warning"));
+      } else if (sourcePoolCount < BINGO_RECOMMENDED_MINIMUM_POOL_SIZE) {
+        noticesNode.append(createNoticeNode(hostUiState.bingoSourcePool.warning, "warning"));
+      }
+    }
+  }
+
+  function renderBingoPreparationCounts(countsNode) {
+    if (!countsNode) {
+      return;
+    }
+
+    countsNode.innerHTML = "";
+
+    [
+      { label: "Registered Players", value: hostUiState.registeredPlayerCount },
+      { label: "Source Pool", value: hostUiState.bingoSourcePool.count },
+      { label: "Target Pool", value: getCurrentBingoTargetPoolSize() },
+      {
+        label: "Can Meet Target",
+        value: hostUiState.bingoSourcePool.count >= getCurrentBingoTargetPoolSize() ? "Yes" : "No",
+      },
+    ].forEach((countDefinition) => {
+      countsNode.append(createSummaryCountCard(countDefinition));
+    });
+  }
+
+  function renderBingoCurrentRoundPanel(roundNode) {
+    if (!roundNode) {
+      return;
+    }
+
+    roundNode.innerHTML = "";
+
+    const roundPanelNode = document.createElement("section");
+    const headerNode = document.createElement("div");
+    const eyebrowNode = document.createElement("p");
+    const titleNode = document.createElement("h4");
+    const statusBadgeNode = document.createElement("span");
+    const titleWrapNode = document.createElement("div");
+
+    roundPanelNode.className = "trivia-round-summary";
+    headerNode.className = "trivia-status-row";
+    eyebrowNode.className = "eyebrow";
+    eyebrowNode.textContent = "Current Bingo Round";
+    titleNode.textContent = hasPreparedBingoRound(hostUiState.bingoCurrentRound)
+      ? hostUiState.bingoCurrentRound.roundId
+      : "No Bingo Round Prepared";
+    statusBadgeNode.className = "trivia-status-badge";
+    statusBadgeNode.dataset.bingoStatus = hostUiState.bingoCurrentRound.status;
+    statusBadgeNode.textContent = getBingoRoundStatusLabel(hostUiState.bingoCurrentRound.status);
+    titleWrapNode.append(eyebrowNode, titleNode);
+    headerNode.append(titleWrapNode, statusBadgeNode);
+    roundPanelNode.append(headerNode);
+
+    if (!hasPreparedBingoRound(hostUiState.bingoCurrentRound)) {
+      const helperCopyNode = document.createElement("p");
+
+      helperCopyNode.className = "player-copy";
+      helperCopyNode.textContent = "No Bingo card round is prepared right now. Upload a Bingo pool in Admin, then prepare a shared card round here when you are ready.";
+      roundPanelNode.append(helperCopyNode);
+      roundNode.append(roundPanelNode);
+      return;
+    }
+
+    roundPanelNode.append(
+      createTriviaQuestionMetaRow("Prepared", formatUpdatedAt(hostUiState.bingoCurrentRound.preparedAt)),
+      createTriviaQuestionMetaRow("Player Count", String(hostUiState.bingoCurrentRound.playerCountAtPreparation)),
+      createTriviaQuestionMetaRow("Target Pool Size", String(hostUiState.bingoCurrentRound.targetPoolSize)),
+      createTriviaQuestionMetaRow("Actual Pool Size", String(hostUiState.bingoCurrentRound.actualPoolSize)),
+      createTriviaQuestionMetaRow("Cards Locked", hostUiState.bingoCurrentRound.cardsLocked ? "Yes" : "No")
+    );
+
+    roundNode.append(roundPanelNode);
+  }
+
+  function renderBingoPreparationActions(actionsNode) {
+    if (!actionsNode) {
+      return;
+    }
+
+    const cannotPrepare = hostUiState.isPreparingBingoRound
+      || !hostUiState.hasLoadedBingoSourcePool
+      || !hostUiState.hasLoadedRegisteredPlayers
+      || !hostUiState.hasLoadedBingoCurrentRound;
+
+    actionsNode.innerHTML = `
+      <button
+        type="button"
+        class="primary-button"
+        data-action="prepare-bingo-round"
+        ${cannotPrepare ? "disabled" : ""}
+      >
+        ${hostUiState.isPreparingBingoRound ? "Preparing Bingo Round..." : "Prepare New Bingo Card Round"}
+      </button>
+    `;
+  }
+
   function renderHostTriviaController() {
     const contentNode = getActiveContentNode();
 
@@ -813,6 +1024,20 @@ export function initHostPage({ firebase, state, renderStatus }) {
         </section>
 
         <section class="player-section admin-section">
+          <div class="player-section-header">
+            <div>
+              <p class="eyebrow">Bingo Round Preparation</p>
+              <h3>Bingo Round Preparation</h3>
+              <p class="player-copy">Prepare a shared Bingo card round using the current registered player count and the saved Bingo bottle pool. Pool size is calculated automatically for this event.</p>
+            </div>
+          </div>
+          <div data-host-bingo-notices></div>
+          <div class="trivia-count-grid" data-host-bingo-counts></div>
+          <div class="admin-button-row" data-host-bingo-actions></div>
+          <div data-host-bingo-current-round></div>
+        </section>
+
+        <section class="player-section admin-section">
           <div>
             <p class="eyebrow">Reserved Host Areas</p>
             <h3>Future Host Modules</h3>
@@ -834,6 +1059,10 @@ export function initHostPage({ firebase, state, renderStatus }) {
     renderPoolStatusNotice(contentNode.querySelector("[data-host-trivia-status]"));
     renderQuestionList(contentNode.querySelector("[data-host-trivia-questions]"));
     renderRandomPreview(contentNode.querySelector("[data-host-random-preview]"));
+    renderBingoPreparationNotices(contentNode.querySelector("[data-host-bingo-notices]"));
+    renderBingoPreparationCounts(contentNode.querySelector("[data-host-bingo-counts]"));
+    renderBingoPreparationActions(contentNode.querySelector("[data-host-bingo-actions]"));
+    renderBingoCurrentRoundPanel(contentNode.querySelector("[data-host-bingo-current-round]"));
   }
 
   function attachTriviaQuestionPoolListener() {
@@ -947,6 +1176,133 @@ export function initHostPage({ firebase, state, renderStatus }) {
         hostUiState.currentRoundUnavailableMessage = "";
         hostUiState.currentRoundWarning = "";
         syncHostAnswersListener(normalizedRound);
+        renderHostTriviaController();
+      }
+    );
+  }
+
+  function attachBingoSourcePoolListener() {
+    if (typeof unsubscribeBingoSourcePoolListener === "function") {
+      return;
+    }
+
+    hostUiState.isBingoSourcePoolLoading = !hostUiState.hasLoadedBingoSourcePool;
+
+    unsubscribeBingoSourcePoolListener = firebase.listenEventData(
+      BINGO_SOURCE_POOL_PATH,
+      (sourcePoolValue, listenerStatus) => {
+        if (!listenerStatus.ok) {
+          hostUiState.isBingoSourcePoolLoading = false;
+
+          if (hostUiState.hasLoadedBingoSourcePool) {
+            hostUiState.bingoSourcePoolWarning = "Live Bingo pool updates are temporarily unavailable. Showing the last loaded pool.";
+          } else {
+            hostUiState.bingoSourcePoolUnavailableMessage = "The Bingo bottle pool is temporarily unavailable right now.";
+          }
+
+          renderHostTriviaController();
+          return;
+        }
+
+        const normalizedSourcePool = normalizeBingoSourcePool(sourcePoolValue);
+
+        if (!normalizedSourcePool.isValid) {
+          hostUiState.isBingoSourcePoolLoading = false;
+
+          if (hostUiState.hasLoadedBingoSourcePool) {
+            hostUiState.bingoSourcePoolWarning = "The saved Bingo bottle pool is invalid. Showing the last loaded pool.";
+          } else {
+            hostUiState.bingoSourcePoolUnavailableMessage = "The saved Bingo bottle pool is invalid. Admin needs to replace it.";
+          }
+
+          renderHostTriviaController();
+          return;
+        }
+
+        hostUiState.bingoSourcePool = normalizedSourcePool;
+        hostUiState.hasLoadedBingoSourcePool = true;
+        hostUiState.isBingoSourcePoolLoading = false;
+        hostUiState.bingoSourcePoolUnavailableMessage = "";
+        hostUiState.bingoSourcePoolWarning = "";
+        renderHostTriviaController();
+      }
+    );
+  }
+
+  function attachRegisteredPlayersListener() {
+    if (typeof unsubscribeRegisteredPlayersListener === "function") {
+      return;
+    }
+
+    hostUiState.isRegisteredPlayersLoading = !hostUiState.hasLoadedRegisteredPlayers;
+
+    unsubscribeRegisteredPlayersListener = firebase.listenEventData("players", (playersValue, listenerStatus) => {
+      if (!listenerStatus.ok) {
+        hostUiState.isRegisteredPlayersLoading = false;
+
+        if (hostUiState.hasLoadedRegisteredPlayers) {
+          hostUiState.registeredPlayersWarning = "Registered player updates are temporarily unavailable. Showing the last loaded count.";
+        } else {
+          hostUiState.registeredPlayersUnavailableMessage = "Registered player counts are temporarily unavailable right now.";
+        }
+
+        renderHostTriviaController();
+        return;
+      }
+
+      hostUiState.registeredPlayerCount = countRegisteredPlayers(playersValue);
+      hostUiState.hasLoadedRegisteredPlayers = true;
+      hostUiState.isRegisteredPlayersLoading = false;
+      hostUiState.registeredPlayersUnavailableMessage = "";
+      hostUiState.registeredPlayersWarning = "";
+      renderHostTriviaController();
+    });
+  }
+
+  function attachBingoCurrentRoundListener() {
+    if (typeof unsubscribeBingoCurrentRoundListener === "function") {
+      return;
+    }
+
+    hostUiState.isBingoCurrentRoundLoading = !hostUiState.hasLoadedBingoCurrentRound;
+
+    unsubscribeBingoCurrentRoundListener = firebase.listenEventData(
+      BINGO_LIVE_CURRENT_ROUND_PATH,
+      (roundValue, listenerStatus) => {
+        if (!listenerStatus.ok) {
+          hostUiState.isBingoCurrentRoundLoading = false;
+
+          if (hostUiState.hasLoadedBingoCurrentRound) {
+            hostUiState.bingoCurrentRoundWarning = "Live Bingo round updates are temporarily unavailable. Showing the last loaded round.";
+          } else {
+            hostUiState.bingoCurrentRoundUnavailableMessage = "The current Bingo round is temporarily unavailable right now.";
+          }
+
+          renderHostTriviaController();
+          return;
+        }
+
+        const normalizedRound = normalizeBingoCurrentRound(roundValue);
+
+        if (!normalizedRound.isValid) {
+          hostUiState.isBingoCurrentRoundLoading = false;
+
+          if (hostUiState.hasLoadedBingoCurrentRound) {
+            hostUiState.bingoCurrentRoundWarning = "The current Bingo round data is invalid. Showing the last loaded round.";
+          } else {
+            hostUiState.bingoCurrentRoundUnavailableMessage = "The current Bingo round data is invalid right now.";
+            hostUiState.bingoCurrentRound = createEmptyBingoCurrentRound();
+          }
+
+          renderHostTriviaController();
+          return;
+        }
+
+        hostUiState.bingoCurrentRound = normalizedRound;
+        hostUiState.hasLoadedBingoCurrentRound = true;
+        hostUiState.isBingoCurrentRoundLoading = false;
+        hostUiState.bingoCurrentRoundUnavailableMessage = "";
+        hostUiState.bingoCurrentRoundWarning = "";
         renderHostTriviaController();
       }
     );
@@ -1095,6 +1451,127 @@ export function initHostPage({ firebase, state, renderStatus }) {
     renderHostTriviaController();
   }
 
+  async function prepareBingoRound() {
+    if (!firebase.getStatus().isConnected) {
+      setBingoPreparationMessage("Bingo round preparation requires a live Firebase connection.", "warning");
+      renderHostTriviaController();
+      return;
+    }
+
+    if (!hostUiState.hasLoadedBingoCurrentRound) {
+      setBingoPreparationMessage("Bingo round state is still loading. Please wait before preparing a new round.", "warning");
+      renderHostTriviaController();
+      return;
+    }
+
+    hostUiState.isPreparingBingoRound = true;
+    setBingoPreparationMessage();
+    renderHostTriviaController();
+
+    const [playersValue, sourcePoolValue, currentRoundValue] = await Promise.all([
+      firebase.readEventData("players"),
+      firebase.readEventData(BINGO_SOURCE_POOL_PATH),
+      firebase.readEventData(BINGO_LIVE_CURRENT_ROUND_PATH),
+    ]);
+    const freshPlayerCount = countRegisteredPlayers(playersValue);
+    const freshSourcePool = normalizeBingoSourcePool(sourcePoolValue);
+    const freshCurrentRound = normalizeBingoCurrentRound(currentRoundValue);
+
+    hostUiState.registeredPlayerCount = freshPlayerCount;
+    hostUiState.hasLoadedRegisteredPlayers = true;
+    hostUiState.isRegisteredPlayersLoading = false;
+    hostUiState.registeredPlayersUnavailableMessage = "";
+    hostUiState.registeredPlayersWarning = "";
+    hostUiState.bingoSourcePool = freshSourcePool.isValid ? freshSourcePool : hostUiState.bingoSourcePool;
+    hostUiState.hasLoadedBingoSourcePool = true;
+    hostUiState.isBingoSourcePoolLoading = false;
+    hostUiState.bingoSourcePoolUnavailableMessage = "";
+    hostUiState.bingoSourcePoolWarning = freshSourcePool.isValid ? "" : "The saved Bingo bottle pool is invalid. Admin needs to replace it.";
+    hostUiState.bingoCurrentRound = freshCurrentRound.isValid ? freshCurrentRound : hostUiState.bingoCurrentRound;
+    hostUiState.hasLoadedBingoCurrentRound = true;
+    hostUiState.isBingoCurrentRoundLoading = false;
+    hostUiState.bingoCurrentRoundUnavailableMessage = "";
+    hostUiState.bingoCurrentRoundWarning = freshCurrentRound.isValid ? "" : "The current Bingo round data is invalid right now.";
+
+    if (!freshSourcePool.isValid) {
+      hostUiState.isPreparingBingoRound = false;
+      setBingoPreparationMessage("The saved Bingo bottle pool is invalid. Admin needs to replace it before a round can be prepared.", "error");
+      renderHostTriviaController();
+      return;
+    }
+
+    if (freshSourcePool.count < BINGO_CARD_ITEM_COUNT) {
+      hostUiState.isPreparingBingoRound = false;
+      setBingoPreparationMessage(`At least ${BINGO_CARD_ITEM_COUNT} unique Bingo items are required before a round can be prepared.`, "warning");
+      renderHostTriviaController();
+      return;
+    }
+
+    if (freshCurrentRound.isValid && hasPreparedBingoRound(freshCurrentRound)) {
+      const replaceConfirmed = window.confirm(
+        "A Bingo card round is already prepared. Replace the current Bingo round with a newly prepared round?"
+      );
+
+      if (!replaceConfirmed) {
+        hostUiState.isPreparingBingoRound = false;
+        renderHostTriviaController();
+        return;
+      }
+    } else if (currentRoundValue && !freshCurrentRound.isValid) {
+      const replaceInvalidConfirmed = window.confirm(
+        "The current Bingo round data is invalid. Replace it with a newly prepared Bingo round?"
+      );
+
+      if (!replaceInvalidConfirmed) {
+        hostUiState.isPreparingBingoRound = false;
+        renderHostTriviaController();
+        return;
+      }
+    }
+
+    const targetPoolSize = getBingoTargetPoolSize(freshPlayerCount);
+    const actualPoolSize = Math.min(targetPoolSize, freshSourcePool.count);
+    const activePool = actualPoolSize === freshSourcePool.count
+      ? sampleBingoItems(freshSourcePool.items, freshSourcePool.count)
+      : sampleBingoItems(freshSourcePool.items, targetPoolSize);
+    const nextRoundPayload = buildBingoCurrentRoundPayload({
+      playerCountAtPreparation: freshPlayerCount,
+      targetPoolSize,
+      activePool,
+      cardsLocked: false,
+      preparedAt: new Date().toISOString(),
+    });
+    const prepareSucceeded = await firebase.writeEventData(BINGO_LIVE_CURRENT_ROUND_PATH, nextRoundPayload);
+
+    hostUiState.isPreparingBingoRound = false;
+
+    if (!prepareSucceeded) {
+      setBingoPreparationMessage(firebase.getStatus().message || "We could not prepare the Bingo round right now. Please try again.", "error");
+      renderHostTriviaController();
+      return;
+    }
+
+    hostUiState.bingoCurrentRound = normalizeBingoCurrentRound(nextRoundPayload);
+    hostUiState.hasLoadedBingoCurrentRound = true;
+    hostUiState.isBingoCurrentRoundLoading = false;
+    hostUiState.bingoCurrentRoundUnavailableMessage = "";
+    hostUiState.bingoCurrentRoundWarning = "";
+
+    if (freshSourcePool.count < targetPoolSize) {
+      setBingoPreparationMessage(
+        `Bingo round prepared with ${freshSourcePool.count} items because the current pool could not meet the ${targetPoolSize}-item target.`,
+        "warning"
+      );
+    } else {
+      setBingoPreparationMessage(
+        `Bingo round prepared for ${freshPlayerCount} registered players with a ${targetPoolSize}-item active pool.`,
+        "success"
+      );
+    }
+
+    renderHostTriviaController();
+  }
+
   function ensureHostClickHandler(rootNode) {
     if (activeHostRoot === rootNode && activeHostClickHandler) {
       return;
@@ -1139,6 +1616,15 @@ export function initHostPage({ firebase, state, renderStatus }) {
         hostUiState.selectedQuestionId = actionNode.dataset.questionId || "";
         setControllerMessage();
         renderHostTriviaController();
+        return;
+      }
+
+      if (action === "prepare-bingo-round") {
+        if (hostUiState.isPreparingBingoRound) {
+          return;
+        }
+
+        await prepareBingoRound();
         return;
       }
 
@@ -1190,6 +1676,9 @@ export function initHostPage({ firebase, state, renderStatus }) {
       ensureHostClickHandler(rootNode);
       attachTriviaQuestionPoolListener();
       attachCurrentRoundListener();
+      attachBingoSourcePoolListener();
+      attachRegisteredPlayersListener();
+      attachBingoCurrentRoundListener();
       renderHostTriviaController();
     },
   });

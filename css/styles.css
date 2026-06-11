@@ -433,6 +433,9 @@ h1 {
 .bottle-list-detail,
 .bottle-list-group-grid,
 .bottle-list-preview,
+.bingo-live-detail,
+.bingo-pool-preview,
+.bingo-card-meta,
 .validation-panel {
   display: grid;
   gap: 16px;
@@ -690,6 +693,16 @@ h1 {
   color: #991b1b;
 }
 
+.trivia-status-badge[data-bingo-status="idle"] {
+  background: rgba(100, 116, 139, 0.14);
+  color: #334155;
+}
+
+.trivia-status-badge[data-bingo-status="cards_open"] {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-strong);
+}
+
 .trivia-empty-panel,
 .trivia-random-panel {
   border: 1px solid var(--border);
@@ -702,6 +715,48 @@ h1 {
   margin: 0;
   padding-left: 20px;
   line-height: 1.6;
+}
+
+.bingo-source-item-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 10px;
+  line-height: 1.6;
+}
+
+.bingo-player-panel {
+  gap: 18px;
+}
+
+.bingo-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bingo-card-tile {
+  display: grid;
+  gap: 10px;
+  min-height: 118px;
+  padding: 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 22px rgba(31, 24, 13, 0.04);
+}
+
+.bingo-card-position {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bingo-card-tile strong {
+  font-size: 0.98rem;
+  line-height: 1.45;
 }
 
 .bottle-list-group h3,

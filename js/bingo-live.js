@@ -654,20 +654,22 @@ export function calculateBingoRoundStatistics({
   cardState.cards.forEach((cardRecord) => {
     const matchState = calculateBingoWinnerMilestones(cardRecord, drawState.orderedDraws);
     const storedWinner = winnerState.winnerMap.get(cardRecord.playerId) || null;
+    const hasDerivedLineWinner = matchState.isLineWinner === true && matchState.completedLines.length > 0;
+    const hasDerivedBlackoutWinner = matchState.isBlackout === true && matchState.matchCount === BINGO_CARD_ITEM_COUNT;
     const playerNameSnapshot = buildPlayerNameSnapshot(playersValue, cardRecord.playerId) || storedWinner?.playerName || "";
     const nextWinnerRecord = buildBingoWinnerRecordPayload({
       roundId: normalizedRound.roundId,
       playerId: cardRecord.playerId,
       playerName: playerNameSnapshot,
-      lineWinner: matchState.isLineWinner,
-      blackoutWinner: matchState.isBlackout,
+      lineWinner: hasDerivedLineWinner,
+      blackoutWinner: hasDerivedBlackoutWinner,
       completedLines: matchState.completedLines,
       firstLineAt: matchState.firstLineAt,
       blackoutAt: matchState.blackoutAt,
       existingWinner: storedWinner,
     });
 
-    if (matchState.isLineWinner || matchState.isBlackout || !storedWinner?.isEmpty) {
+    if (nextWinnerRecord.lineWinner === true || nextWinnerRecord.blackoutWinner === true) {
       winnerRows.push({
         playerId: cardRecord.playerId,
         playerName: playerNameSnapshot,
@@ -680,14 +682,14 @@ export function calculateBingoRoundStatistics({
       });
     }
 
-    if (matchState.isLineWinner || matchState.isBlackout) {
+    if (nextWinnerRecord.lineWinner === true || nextWinnerRecord.blackoutWinner === true) {
       derivedWinnerCandidates.push({
         playerId: cardRecord.playerId,
         playerName: playerNameSnapshot,
         matchCount: matchState.matchCount,
         completedLines: matchState.completedLines.slice(),
-        lineWinner: matchState.isLineWinner,
-        blackoutWinner: matchState.isBlackout,
+        lineWinner: nextWinnerRecord.lineWinner,
+        blackoutWinner: nextWinnerRecord.blackoutWinner,
         firstLineAt: matchState.firstLineAt,
         blackoutAt: matchState.blackoutAt,
         storedWinner,

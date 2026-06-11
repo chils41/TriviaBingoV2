@@ -1405,17 +1405,25 @@ export function initHostPage({ firebase, state, renderStatus }) {
     headerNode.append(eyebrowNode, titleNode);
     panelNode.append(headerNode);
 
-    if (hostUiState.bingoStats.winnerRows.length === 0) {
+    const winnerRows = hostUiState.bingoStats.winnerRows.filter(
+      (winnerRow) => winnerRow.blackoutWinner === true || winnerRow.lineWinner === true
+    );
+
+    if (winnerRows.length === 0) {
       const emptyCopyNode = document.createElement("p");
 
       emptyCopyNode.className = "player-copy";
-      emptyCopyNode.textContent = "No line or blackout winners have been detected yet.";
+      emptyCopyNode.textContent = "No Bingo winners detected yet.";
       panelNode.append(emptyCopyNode);
       winnersNode.append(panelNode);
       return;
     }
 
-    hostUiState.bingoStats.winnerRows.forEach((winnerRow) => {
+    winnerRows.forEach((winnerRow) => {
+      if (winnerRow.blackoutWinner !== true && winnerRow.lineWinner !== true) {
+        return;
+      }
+
       const winnerCardNode = document.createElement("article");
       const titleWrapNode = document.createElement("div");
       const winnerTitleNode = document.createElement("h4");
@@ -1425,10 +1433,12 @@ export function initHostPage({ firebase, state, renderStatus }) {
       titleWrapNode.className = "trivia-question-header";
       winnerTitleNode.textContent = winnerRow.playerName || winnerRow.playerId;
       winnerBadgeNode.className = "trivia-status-badge";
-      winnerBadgeNode.dataset.bingoStatus = winnerRow.blackoutWinner
+      winnerBadgeNode.dataset.bingoStatus = winnerRow.blackoutWinner === true
         ? BINGO_ROUND_STATUS_ENDED
         : BINGO_ROUND_STATUS_IN_PROGRESS;
-      winnerBadgeNode.textContent = winnerRow.blackoutWinner ? "Blackout Winner" : "Line Winner";
+      winnerBadgeNode.textContent = winnerRow.blackoutWinner === true
+        ? "Blackout Winner"
+        : "Line Winner";
       titleWrapNode.append(winnerTitleNode, winnerBadgeNode);
       winnerCardNode.append(
         titleWrapNode,

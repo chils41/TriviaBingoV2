@@ -401,7 +401,9 @@ function renderDisplay() {
           : "Switch the display back to Waiting or choose a new Trivia round from Host/Admin.",
       }));
     } else {
-      mainWrapNode.append(createTriviaRoundView(displayUiState.triviaRound));
+      mainWrapNode.append(createTriviaRoundView(displayUiState.triviaRound, {
+        revealAnswer: displayUiState.triviaRound.status === TRIVIA_ROUND_STATUS_REVEALED,
+      }));
     }
   }
 

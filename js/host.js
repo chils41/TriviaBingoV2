@@ -59,6 +59,12 @@ import {
   TRIVIA_CURRENT_ROUND_PATH,
 } from "./trivia-live.js";
 import { createDisplayControlsManager } from "./display-controls.js";
+import {
+  buildDisplayModePatch,
+  DISPLAY_MODE_BINGO,
+  DISPLAY_MODE_TRIVIA,
+  DISPLAY_PATH,
+} from "./display-state.js";
 import { escapeHtml, normalizeTextInput } from "./utils.js";
 
 const HOST_ROOT_SELECTOR = "#host-app";
@@ -399,6 +405,35 @@ export function initHostPage({ firebase, state, renderStatus }) {
 
   function setBingoPreparationMessage(text = "", tone = "info") {
     hostUiState.bingoPreparationMessage = { text, tone };
+  }
+
+  function buildDisplayAutoFollowWarning(actionMessage, displayModeLabel) {
+    const firebaseStatusMessage = normalizeTextInput(firebase.getStatus().message);
+    const fallbackGuidance = `Use the Display controls to switch to ${displayModeLabel} manually.`;
+
+    return `${actionMessage} However, the public display could not switch to ${displayModeLabel} automatically. ${firebaseStatusMessage || fallbackGuidance}`;
+  }
+
+  async function syncHostDisplayToTriviaRound(roundId) {
+    return firebase.updateEventData(
+      DISPLAY_PATH,
+      buildDisplayModePatch({
+        mode: DISPLAY_MODE_TRIVIA,
+        triviaRoundId: roundId,
+        updatedByRole: "host",
+      })
+    );
+  }
+
+  async function syncHostDisplayToBingoMode() {
+    return firebase.updateEventData(
+      DISPLAY_PATH,
+      buildDisplayModePatch({
+        mode: DISPLAY_MODE_BINGO,
+        triviaRoundId: "",
+        updatedByRole: "host",
+      })
+    );
   }
 
   function getActiveContentNode() {
@@ -2033,6 +2068,20 @@ export function initHostPage({ firebase, state, renderStatus }) {
       return;
     }
 
+    const didDisplayAutoFollow = await syncHostDisplayToTriviaRound(nextRoundPayload.roundId);
+
+    if (!didDisplayAutoFollow) {
+      setControllerMessage(
+        buildDisplayAutoFollowWarning(
+          `Live Trivia round pushed for ${latestSelectedQuestion.id}.`,
+          "Trivia"
+        ),
+        "warning"
+      );
+      renderHostTriviaController();
+      return;
+    }
+
     setControllerMessage(`Live Trivia round pushed for ${latestSelectedQuestion.id}.`, "success");
     renderHostTriviaController();
   }
@@ -2231,6 +2280,17 @@ export function initHostPage({ firebase, state, renderStatus }) {
       return;
     }
 
+    const didDisplayAutoFollow = await syncHostDisplayToBingoMode();
+
+    if (!didDisplayAutoFollow) {
+      setBingoPreparationMessage(
+        buildDisplayAutoFollowWarning("Bingo cards locked.", "Bingo"),
+        "warning"
+      );
+      renderHostTriviaController();
+      return;
+    }
+
     setBingoPreparationMessage("Bingo cards locked.", "success");
     renderHostTriviaController();
   }
@@ -2275,6 +2335,17 @@ export function initHostPage({ firebase, state, renderStatus }) {
 
     if (!startSucceeded) {
       setBingoPreparationMessage(firebase.getStatus().message || "We could not start the Bingo round right now. Please try again.", "error");
+      renderHostTriviaController();
+      return;
+    }
+
+    const didDisplayAutoFollow = await syncHostDisplayToBingoMode();
+
+    if (!didDisplayAutoFollow) {
+      setBingoPreparationMessage(
+        buildDisplayAutoFollowWarning("Bingo round started.", "Bingo"),
+        "warning"
+      );
       renderHostTriviaController();
       return;
     }
@@ -2368,10 +2439,22 @@ export function initHostPage({ firebase, state, renderStatus }) {
       return;
     }
 
+    const didDisplayAutoFollow = await syncHostDisplayToBingoMode();
+    const drawSuccessMessage = normalizedMethod === BINGO_DRAW_METHOD_MANUAL
+      ? `Manually drew ${activePoolItem.name}.`
+      : `Drew ${activePoolItem.name}.`;
+
+    if (!didDisplayAutoFollow) {
+      setBingoPreparationMessage(
+        buildDisplayAutoFollowWarning(drawSuccessMessage, "Bingo"),
+        "warning"
+      );
+      renderHostTriviaController();
+      return;
+    }
+
     setBingoPreparationMessage(
-      normalizedMethod === BINGO_DRAW_METHOD_MANUAL
-        ? `Manually drew ${activePoolItem.name}.`
-        : `Drew ${activePoolItem.name}.`,
+      drawSuccessMessage,
       "success"
     );
     renderHostTriviaController();
@@ -2416,6 +2499,20 @@ export function initHostPage({ firebase, state, renderStatus }) {
 
     if (!endSucceeded) {
       setBingoPreparationMessage(firebase.getStatus().message || "We could not end the Bingo round right now. Please try again.", "error");
+      renderHostTriviaController();
+      return;
+    }
+
+    const didDisplayAutoFollow = await syncHostDisplayToBingoMode();
+
+    if (!didDisplayAutoFollow) {
+      setBingoPreparationMessage(
+        buildDisplayAutoFollowWarning(
+          "Bingo round ended. Cards, draws, statistics, and winners remain visible.",
+          "Bingo"
+        ),
+        "warning"
+      );
       renderHostTriviaController();
       return;
     }
@@ -2595,17 +2692,24 @@ export function initHostPage({ firebase, state, renderStatus }) {
     recalculateHostBingoStats();
     syncHostBingoRoundScopedListeners(hostUiState.bingoCurrentRound);
 
-    if (freshSourcePool.count < targetPoolSize) {
+    const displayFollowSucceeded = await syncHostDisplayToBingoMode();
+    const preparedRoundMessage = freshSourcePool.count < targetPoolSize
+      ? `Bingo round prepared with ${freshSourcePool.count} items because the current pool could not meet the ${targetPoolSize}-item target.`
+      : `Bingo round prepared for ${freshPlayerCount} registered players with a ${targetPoolSize}-item active pool.`;
+    const preparedRoundTone = freshSourcePool.count < targetPoolSize
+      ? "warning"
+      : "success";
+
+    if (!displayFollowSucceeded) {
       setBingoPreparationMessage(
-        `Bingo round prepared with ${freshSourcePool.count} items because the current pool could not meet the ${targetPoolSize}-item target.`,
+        buildDisplayAutoFollowWarning(preparedRoundMessage, "Bingo"),
         "warning"
       );
-    } else {
-      setBingoPreparationMessage(
-        `Bingo round prepared for ${freshPlayerCount} registered players with a ${targetPoolSize}-item active pool.`,
-        "success"
-      );
+      renderHostTriviaController();
+      return;
     }
+
+    setBingoPreparationMessage(preparedRoundMessage, preparedRoundTone);
 
     renderHostTriviaController();
   }

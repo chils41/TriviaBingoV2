@@ -37,6 +37,7 @@ import {
   normalizeReviewLinks,
   normalizeStaticPages,
 } from "./static-pages.js";
+import { createDisplayControlsManager } from "./display-controls.js";
 
 const ADMIN_ROOT_SELECTOR = "#admin-app";
 
@@ -44,6 +45,8 @@ let activeAdminRoot = null;
 let activeAdminClickHandler = null;
 let activeAdminInputHandler = null;
 let activeAdminSubmitHandler = null;
+let activeAdminDisplayControls = null;
+let hasBoundAdminBeforeUnload = false;
 
 const ADMIN_RESERVED_CARDS = [
   {
@@ -446,8 +449,26 @@ function renderBingoSourcePoolPreview(previewNode, previewResult) {
   previewNode.append(previewSectionNode);
 }
 
+function cleanupAdminPageRuntime() {
+  if (activeAdminDisplayControls) {
+    activeAdminDisplayControls.cleanup();
+  }
+}
+
+function handleAdminBeforeUnload() {
+  cleanupAdminPageRuntime();
+}
+
 export function initAdminPage({ firebase, state, renderStatus }) {
   const adminRoot = document.querySelector(ADMIN_ROOT_SELECTOR);
+
+  cleanupAdminPageRuntime();
+
+  activeAdminDisplayControls = createDisplayControlsManager({
+    firebase,
+    state,
+    role: "admin",
+  });
   const adminUiState = {
     activePageKey: STATIC_PAGE_DEFINITIONS[0].key,
     isLoading: true,
@@ -494,6 +515,11 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       tone: "info",
     },
   };
+
+  if (!hasBoundAdminBeforeUnload) {
+    window.addEventListener("beforeunload", handleAdminBeforeUnload);
+    hasBoundAdminBeforeUnload = true;
+  }
 
   function setPageMessage(text = "", tone = "info") {
     adminUiState.pageMessage = { text, tone };
@@ -726,6 +752,8 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     contentNode.innerHTML = `
       <div class="admin-sections">
+        <div data-admin-display-controls></div>
+
         <section class="player-section admin-section">
           <div class="player-section-header">
             <div>
@@ -928,6 +956,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         </section>
       </div>
     `;
+
+    if (activeAdminDisplayControls) {
+      activeAdminDisplayControls.renderInto(contentNode.querySelector("[data-admin-display-controls]"));
+    }
 
     const titleField = contentNode.querySelector("[data-static-page-title-input]");
     const contentField = contentNode.querySelector("[data-static-page-content-input]");
@@ -1407,9 +1439,18 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
   if (adminRoot) {
     activeAdminClickHandler = async (event) => {
+      if (activeAdminDisplayControls && await activeAdminDisplayControls.handleClick(event)) {
+        return;
+      }
+
       const actionNode = event.target.closest("[data-action]");
 
       if (!actionNode) {
+        return;
+      }
+
+      if (actionNode.dataset.action === "lock-role") {
+        cleanupAdminPageRuntime();
         return;
       }
 
@@ -1472,6 +1513,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     };
 
     activeAdminInputHandler = (event) => {
+      if (activeAdminDisplayControls && activeAdminDisplayControls.handleInput(event)) {
+        return;
+      }
+
       const inputNode = event.target;
 
       if (inputNode instanceof HTMLTextAreaElement && inputNode.dataset.triviaQuestionPoolInput !== undefined) {
@@ -1501,6 +1546,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     };
 
     activeAdminSubmitHandler = async (event) => {
+      if (activeAdminDisplayControls && await activeAdminDisplayControls.handleSubmit(event)) {
+        return;
+      }
+
       const formNode = event.target;
 
       if (!(formNode instanceof HTMLFormElement)) {

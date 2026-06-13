@@ -58,18 +58,19 @@ import {
   normalizeTriviaCurrentRound,
   TRIVIA_CURRENT_ROUND_PATH,
 } from "./trivia-live.js";
+import { createDisplayControlsManager } from "./display-controls.js";
 import { escapeHtml, normalizeTextInput } from "./utils.js";
 
 const HOST_ROOT_SELECTOR = "#host-app";
 
 const HOST_RESERVED_CARDS = [
   {
-    title: "Display Screen",
-    description: "Future display coordination shortcuts will appear here for live event use.",
+    title: "Operations Dashboard",
+    description: "A broader host operations dashboard will be added in a later slice after the remaining core modules are complete.",
   },
   {
-    title: "Announcements",
-    description: "Future host-only announcement tools will be added in a later slice.",
+    title: "Expanded Host Tools",
+    description: "Additional host-only coordination shortcuts will be added in a later slice.",
   },
 ];
 
@@ -82,6 +83,9 @@ const HOST_FILTER_DEFINITIONS = [
 
 let activeHostRoot = null;
 let activeHostClickHandler = null;
+let activeHostInputHandler = null;
+let activeHostSubmitHandler = null;
+let activeHostDisplayControls = null;
 let unsubscribeTriviaPoolListener = null;
 let unsubscribeCurrentRoundListener = null;
 let unsubscribeHostAnswersListener = null;
@@ -279,8 +283,22 @@ function cleanupHostTriviaController() {
     activeHostRoot.removeEventListener("click", activeHostClickHandler);
   }
 
+  if (activeHostRoot && activeHostInputHandler) {
+    activeHostRoot.removeEventListener("input", activeHostInputHandler);
+  }
+
+  if (activeHostRoot && activeHostSubmitHandler) {
+    activeHostRoot.removeEventListener("submit", activeHostSubmitHandler);
+  }
+
+  if (activeHostDisplayControls) {
+    activeHostDisplayControls.cleanup();
+  }
+
   activeHostRoot = null;
   activeHostClickHandler = null;
+  activeHostInputHandler = null;
+  activeHostSubmitHandler = null;
 }
 
 function handleHostBeforeUnload() {
@@ -289,6 +307,16 @@ function handleHostBeforeUnload() {
 
 export function initHostPage({ firebase, state, renderStatus }) {
   const hostRoot = document.querySelector(HOST_ROOT_SELECTOR);
+
+  if (activeHostDisplayControls) {
+    activeHostDisplayControls.cleanup();
+  }
+
+  activeHostDisplayControls = createDisplayControlsManager({
+    firebase,
+    state,
+    role: "host",
+  });
   const hostUiState = {
     questionPool: normalizeTriviaQuestionPool(null),
     hasLoadedQuestionPool: false,
@@ -1465,6 +1493,8 @@ export function initHostPage({ firebase, state, renderStatus }) {
 
     contentNode.innerHTML = `
       <div class="admin-sections">
+        <div data-host-display-controls></div>
+
         <section class="player-section admin-section">
           <div class="player-section-header">
             <div>
@@ -1552,6 +1582,10 @@ export function initHostPage({ firebase, state, renderStatus }) {
         </section>
       </div>
     `;
+
+    if (activeHostDisplayControls) {
+      activeHostDisplayControls.renderInto(contentNode.querySelector("[data-host-display-controls]"));
+    }
 
     renderControllerNotices(contentNode.querySelector("[data-host-live-notices]"));
     renderSelectedQuestionPreview(contentNode.querySelector("[data-host-selected-question]"));
@@ -2576,8 +2610,13 @@ export function initHostPage({ firebase, state, renderStatus }) {
     renderHostTriviaController();
   }
 
-  function ensureHostClickHandler(rootNode) {
-    if (activeHostRoot === rootNode && activeHostClickHandler) {
+  function ensureHostEventHandlers(rootNode) {
+    if (
+      activeHostRoot === rootNode
+      && activeHostClickHandler
+      && activeHostInputHandler
+      && activeHostSubmitHandler
+    ) {
       return;
     }
 
@@ -2585,7 +2624,19 @@ export function initHostPage({ firebase, state, renderStatus }) {
       activeHostRoot.removeEventListener("click", activeHostClickHandler);
     }
 
+    if (activeHostRoot && activeHostInputHandler) {
+      activeHostRoot.removeEventListener("input", activeHostInputHandler);
+    }
+
+    if (activeHostRoot && activeHostSubmitHandler) {
+      activeHostRoot.removeEventListener("submit", activeHostSubmitHandler);
+    }
+
     activeHostClickHandler = async (event) => {
+      if (activeHostDisplayControls && await activeHostDisplayControls.handleClick(event)) {
+        return;
+      }
+
       const actionNode = event.target.closest("[data-action]");
 
       if (!actionNode) {
@@ -2715,7 +2766,21 @@ export function initHostPage({ firebase, state, renderStatus }) {
       }
     };
 
+    activeHostInputHandler = (event) => {
+      if (activeHostDisplayControls) {
+        activeHostDisplayControls.handleInput(event);
+      }
+    };
+
+    activeHostSubmitHandler = async (event) => {
+      if (activeHostDisplayControls && await activeHostDisplayControls.handleSubmit(event)) {
+        return;
+      }
+    };
+
     rootNode.addEventListener("click", activeHostClickHandler);
+    rootNode.addEventListener("input", activeHostInputHandler);
+    rootNode.addEventListener("submit", activeHostSubmitHandler);
     activeHostRoot = rootNode;
   }
 
@@ -2736,7 +2801,7 @@ export function initHostPage({ firebase, state, renderStatus }) {
       initBingoModule({ firebase, state, role: "host" });
     },
     onRenderUnlocked({ rootNode }) {
-      ensureHostClickHandler(rootNode);
+      ensureHostEventHandlers(rootNode);
       attachTriviaQuestionPoolListener();
       attachCurrentRoundListener();
       attachBingoSourcePoolListener();

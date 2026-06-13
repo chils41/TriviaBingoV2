@@ -7,31 +7,11 @@
   <link rel="stylesheet" href="./css/styles.css">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 </head>
-<body data-app="display">
-  <div class="app-shell">
-    <header class="page-header">
-      <p class="eyebrow">A2Z Event Platform</p>
-      <h1>Display Screen</h1>
-      <p class="page-copy">Shared public-facing display surface for gameplay, calls, and announcements.</p>
-    </header>
-
-    <main class="page-content">
-      <section class="card">
-        <h2>Display Page</h2>
-        <p>The display module is connected and ready for event-driven rendering in later slices.</p>
-        <div id="app-status" class="status-panel" aria-live="polite"></div>
-      </section>
-
-      <section class="card">
-        <h2>Planned Content Types</h2>
-        <ul class="simple-list">
-          <li>Trivia prompts and answer reveals</li>
-          <li>Bingo calls and board views</li>
-          <li>Raffle and announcement states</li>
-        </ul>
-      </section>
-    </main>
-  </div>
+<body data-app="display" class="display-page">
+  <main class="display-page-shell">
+    <div id="display-app" class="display-page-root" aria-live="polite"></div>
+    <div id="app-status" class="status-panel display-page-status" aria-live="polite"></div>
+  </main>
 
   <script>
     window.EVENT_ENGINE_FIREBASE_CONFIG = window.EVENT_ENGINE_FIREBASE_CONFIG || null;

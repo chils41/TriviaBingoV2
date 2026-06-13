@@ -38,6 +38,11 @@ import {
   normalizeStaticPages,
 } from "./static-pages.js";
 import { createDisplayControlsManager } from "./display-controls.js";
+import {
+  downloadBingoWinnersCsv,
+  downloadCheckedInPlayersCsv,
+  getExportCapabilities,
+} from "./export.js";
 
 const ADMIN_ROOT_SELECTOR = "#admin-app";
 
@@ -56,10 +61,6 @@ const ADMIN_RESERVED_CARDS = [
   {
     title: "Player Management",
     description: "Future player lookup and record maintenance tools will stay in the Admin area.",
-  },
-  {
-    title: "Exports",
-    description: "Future export tools remain reserved for Admin-only access.",
   },
 ];
 
@@ -514,6 +515,12 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       text: "",
       tone: "info",
     },
+    exportMessage: {
+      text: "",
+      tone: "info",
+    },
+    isExportingPlayers: false,
+    isExportingBingoWinners: false,
   };
 
   if (!hasBoundAdminBeforeUnload) {
@@ -539,6 +546,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
   function setQuestionPoolMessage(text = "", tone = "info") {
     adminUiState.questionPoolMessage = { text, tone };
+  }
+
+  function setExportMessage(text = "", tone = "info") {
+    adminUiState.exportMessage = { text, tone };
   }
 
   function getEditableBottleListSource(bottleListValue) {
@@ -749,10 +760,47 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     const isQuestionPoolBusy = adminUiState.isLoading || adminUiState.isSavingQuestionPool || adminUiState.isClearingQuestionPool;
     const currentQuestionPoolCounts = adminUiState.questionPoolPreview?.counts || adminUiState.questionPool.counts;
     const currentBingoSourcePoolCounts = adminUiState.bingoSourcePoolPreview || adminUiState.bingoSourcePool;
+    const exportCapabilities = getExportCapabilities("admin");
+    const isAnyExportBusy = adminUiState.isLoading
+      || adminUiState.isExportingPlayers
+      || adminUiState.isExportingBingoWinners;
+    const exportsSectionMarkup = exportCapabilities.allowed
+      ? `
+        <section class="player-section admin-section">
+          <div class="player-section-header">
+            <div>
+              <p class="eyebrow">Exports</p>
+              <h3>Download Live Event CSVs</h3>
+              <p class="player-copy">Export checked-in players and stored Bingo winner records without changing Firebase. Downloads happen directly in this browser session.</p>
+            </div>
+          </div>
+          ${renderSectionNotice(adminUiState.exportMessage)}
+          <div class="admin-button-row">
+            <button
+              type="button"
+              class="primary-button"
+              data-action="download-checked-in-players-csv"
+              ${isAnyExportBusy ? "disabled" : ""}
+            >
+              ${adminUiState.isExportingPlayers ? "Downloading Players CSV..." : "Download Checked-In Players CSV"}
+            </button>
+            <button
+              type="button"
+              class="primary-button"
+              data-action="download-bingo-winners-csv"
+              ${isAnyExportBusy ? "disabled" : ""}
+            >
+              ${adminUiState.isExportingBingoWinners ? "Downloading Bingo Winners CSV..." : "Download Bingo Winners CSV"}
+            </button>
+          </div>
+        </section>
+      `
+      : "";
 
     contentNode.innerHTML = `
       <div class="admin-sections">
         <div data-admin-display-controls></div>
+        ${exportsSectionMarkup}
 
         <section class="player-section admin-section">
           <div class="player-section-header">
@@ -1017,6 +1065,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     setBingoSourcePoolMessage();
     setBottleListMessage();
     setQuestionPoolMessage();
+    setExportMessage();
     renderAdminContent();
 
     const [pagesValue, reviewLinksValue, bingoSourcePoolValue, bottleListValue, questionPoolValue] = await Promise.all([
@@ -1082,6 +1131,64 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     }
 
     adminUiState.isLoading = false;
+    renderAdminContent();
+  }
+
+  async function exportCheckedInPlayers() {
+    if (adminUiState.isExportingPlayers || adminUiState.isExportingBingoWinners) {
+      return;
+    }
+
+    adminUiState.isExportingPlayers = true;
+    setExportMessage();
+    renderAdminContent();
+
+    let exportResult;
+
+    try {
+      exportResult = await downloadCheckedInPlayersCsv({
+        firebase,
+        eventId: state.getState().eventId || firebase.getEventId(),
+      });
+    } catch (error) {
+      console.error("[Event Engine] Checked-in players export failed.", error);
+      exportResult = {
+        message: `Checked-In Players CSV failed: ${error.message}`,
+        tone: "error",
+      };
+    }
+
+    adminUiState.isExportingPlayers = false;
+    setExportMessage(exportResult.message, exportResult.tone);
+    renderAdminContent();
+  }
+
+  async function exportBingoWinners() {
+    if (adminUiState.isExportingPlayers || adminUiState.isExportingBingoWinners) {
+      return;
+    }
+
+    adminUiState.isExportingBingoWinners = true;
+    setExportMessage();
+    renderAdminContent();
+
+    let exportResult;
+
+    try {
+      exportResult = await downloadBingoWinnersCsv({
+        firebase,
+        eventId: state.getState().eventId || firebase.getEventId(),
+      });
+    } catch (error) {
+      console.error("[Event Engine] Bingo winners export failed.", error);
+      exportResult = {
+        message: `Bingo Winners CSV failed: ${error.message}`,
+        tone: "error",
+      };
+    }
+
+    adminUiState.isExportingBingoWinners = false;
+    setExportMessage(exportResult.message, exportResult.tone);
     renderAdminContent();
   }
 
@@ -1464,6 +1571,16 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         adminUiState.activePageKey = nextPageKey;
         setPageMessage();
         renderAdminContent();
+        return;
+      }
+
+      if (actionNode.dataset.action === "download-checked-in-players-csv") {
+        await exportCheckedInPlayers();
+        return;
+      }
+
+      if (actionNode.dataset.action === "download-bingo-winners-csv") {
+        await exportBingoWinners();
         return;
       }
 

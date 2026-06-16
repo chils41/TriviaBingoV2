@@ -58,12 +58,28 @@ import {
   normalizeTriviaCurrentRound,
   TRIVIA_CURRENT_ROUND_PATH,
 } from "./trivia-live.js";
-import { createDisplayControlsManager } from "./display-controls.js";
 import {
+  buildAnnouncementDisplayPatch,
   buildDisplayModePatch,
+  buildWaitingDisplayPatch,
+  buildWinnerDisplayPatch,
+  canDisplayTriviaRevealRound,
+  canDisplayTriviaRound,
   DISPLAY_MODE_BINGO,
+  DISPLAY_MODE_ANNOUNCEMENT,
   DISPLAY_MODE_TRIVIA,
+  DISPLAY_MODE_TRIVIA_REVEAL,
+  DISPLAY_MODE_WAITING,
+  DISPLAY_MODE_WINNER,
   DISPLAY_PATH,
+  formatDisplayModeLabel,
+  getDisplayMessageTitle,
+  getWaitingStatusFallback,
+  hasAnnouncementDisplayMessage,
+  hasWinnerDisplayMessage,
+  normalizeDisplayState,
+  validateAnnouncementDraft,
+  validateWinnerDraft,
 } from "./display-state.js";
 import { escapeHtml, normalizeTextInput } from "./utils.js";
 
@@ -87,14 +103,24 @@ const HOST_FILTER_DEFINITIONS = [
   { key: "hard", label: "Hard" },
 ];
 
+const HOST_DEFAULT_TAB_KEY = "trivia";
+
+const HOST_TAB_DEFINITIONS = [
+  { key: "display", label: "Display" },
+  { key: "trivia", label: "Trivia" },
+  { key: "bingo", label: "Bingo" },
+  { key: "advanced", label: "Advanced" },
+];
+
 let activeHostRoot = null;
 let activeHostClickHandler = null;
 let activeHostInputHandler = null;
+let activeHostChangeHandler = null;
 let activeHostSubmitHandler = null;
-let activeHostDisplayControls = null;
 let unsubscribeTriviaPoolListener = null;
 let unsubscribeCurrentRoundListener = null;
 let unsubscribeHostAnswersListener = null;
+let unsubscribeHostDisplayListener = null;
 let unsubscribeBingoSourcePoolListener = null;
 let unsubscribeBingoCurrentRoundListener = null;
 let unsubscribeRegisteredPlayersListener = null;
@@ -102,6 +128,22 @@ let unsubscribeBingoCardsListener = null;
 let unsubscribeBingoDrawsListener = null;
 let unsubscribeBingoWinnersListener = null;
 let hasBoundHostBeforeUnload = false;
+
+function normalizeHostTabKey(tabKey) {
+  const normalizedTabKey = normalizeTextInput(tabKey).toLowerCase();
+
+  return HOST_TAB_DEFINITIONS.some((tabDefinition) => tabDefinition.key === normalizedTabKey)
+    ? normalizedTabKey
+    : HOST_DEFAULT_TAB_KEY;
+}
+
+function normalizeHostDifficultyFilter(filterValue) {
+  const normalizedFilter = normalizeTextInput(filterValue).toLowerCase();
+
+  return HOST_FILTER_DEFINITIONS.some((filterDefinition) => filterDefinition.key === normalizedFilter)
+    ? normalizedFilter
+    : "all";
+}
 
 function renderReservedCards(cards) {
   return cards
@@ -130,6 +172,32 @@ function formatUpdatedAt(updatedAt) {
 
 function createCountDefinition(label, value) {
   return { label, value: String(value) };
+}
+
+function formatTriviaDifficultyLabel(difficultyValue) {
+  const normalizedDifficulty = normalizeTextInput(difficultyValue).toLowerCase();
+
+  return normalizedDifficulty
+    ? `${normalizedDifficulty.charAt(0).toUpperCase()}${normalizedDifficulty.slice(1)}`
+    : "All";
+}
+
+function formatTriviaQuestionOptionLabel(question) {
+  return `[${formatTriviaDifficultyLabel(question.difficulty)}] ${question.question}`;
+}
+
+function normalizeHostDisplayComposerType(value) {
+  const normalizedValue = normalizeTextInput(value).toLowerCase();
+
+  if (
+    normalizedValue === DISPLAY_MODE_WAITING
+    || normalizedValue === DISPLAY_MODE_ANNOUNCEMENT
+    || normalizedValue === DISPLAY_MODE_WINNER
+  ) {
+    return normalizedValue;
+  }
+
+  return DISPLAY_MODE_WAITING;
 }
 
 function createNoticeNode(message, tone = "info") {
@@ -169,6 +237,7 @@ function createTriviaQuestionCard(
   question,
   {
     showHeading = true,
+    showId = true,
     showAnswer = true,
     showSelectAction = false,
     isSelected = false,
@@ -188,14 +257,18 @@ function createTriviaQuestionCard(
   questionNode.dataset.questionId = question.id;
   questionNode.dataset.selected = isSelected ? "true" : "false";
   headerNode.className = "trivia-question-header";
-  headingNode.textContent = question.id;
   badgeNode.className = "trivia-difficulty-badge";
   badgeNode.dataset.difficulty = question.difficulty;
   badgeNode.textContent = question.difficulty;
   questionCopyNode.className = "trivia-question-copy";
   questionCopyNode.textContent = question.question;
 
-  headerNode.append(headingNode, badgeNode);
+  if (showId) {
+    headingNode.textContent = question.id;
+    headerNode.append(headingNode);
+  }
+
+  headerNode.append(badgeNode);
   questionNode.append(
     headerNode,
     createTriviaQuestionMetaRow("Difficulty", question.difficulty),
@@ -228,6 +301,29 @@ function createTriviaQuestionCard(
   return questionNode;
 }
 
+function createTriviaQuestionListRow(question, isSelected) {
+  const rowNode = document.createElement("article");
+  const copyNode = document.createElement("p");
+  const badgeNode = document.createElement("span");
+  const buttonNode = document.createElement("button");
+
+  rowNode.className = "host-trivia-list-item";
+  rowNode.dataset.selected = isSelected ? "true" : "false";
+  badgeNode.className = "trivia-difficulty-badge";
+  badgeNode.dataset.difficulty = question.difficulty;
+  badgeNode.textContent = formatTriviaDifficultyLabel(question.difficulty);
+  copyNode.className = "trivia-question-copy";
+  copyNode.textContent = question.question;
+  buttonNode.type = "button";
+  buttonNode.className = isSelected ? "primary-button" : "secondary-button";
+  buttonNode.dataset.action = "select-trivia-question";
+  buttonNode.dataset.questionId = question.id;
+  buttonNode.textContent = isSelected ? "Selected" : "Select";
+
+  rowNode.append(badgeNode, copyNode, buttonNode);
+  return rowNode;
+}
+
 function createRoundSnapshotQuestion(round) {
   return {
     id: round.questionId,
@@ -249,6 +345,10 @@ function cleanupHostTriviaController() {
 
   if (typeof unsubscribeHostAnswersListener === "function") {
     unsubscribeHostAnswersListener();
+  }
+
+  if (typeof unsubscribeHostDisplayListener === "function") {
+    unsubscribeHostDisplayListener();
   }
 
   if (typeof unsubscribeBingoSourcePoolListener === "function") {
@@ -278,6 +378,7 @@ function cleanupHostTriviaController() {
   unsubscribeTriviaPoolListener = null;
   unsubscribeCurrentRoundListener = null;
   unsubscribeHostAnswersListener = null;
+  unsubscribeHostDisplayListener = null;
   unsubscribeBingoSourcePoolListener = null;
   unsubscribeBingoCurrentRoundListener = null;
   unsubscribeRegisteredPlayersListener = null;
@@ -293,17 +394,18 @@ function cleanupHostTriviaController() {
     activeHostRoot.removeEventListener("input", activeHostInputHandler);
   }
 
-  if (activeHostRoot && activeHostSubmitHandler) {
-    activeHostRoot.removeEventListener("submit", activeHostSubmitHandler);
+  if (activeHostRoot && activeHostChangeHandler) {
+    activeHostRoot.removeEventListener("change", activeHostChangeHandler);
   }
 
-  if (activeHostDisplayControls) {
-    activeHostDisplayControls.cleanup();
+  if (activeHostRoot && activeHostSubmitHandler) {
+    activeHostRoot.removeEventListener("submit", activeHostSubmitHandler);
   }
 
   activeHostRoot = null;
   activeHostClickHandler = null;
   activeHostInputHandler = null;
+  activeHostChangeHandler = null;
   activeHostSubmitHandler = null;
 }
 
@@ -313,16 +415,6 @@ function handleHostBeforeUnload() {
 
 export function initHostPage({ firebase, state, renderStatus }) {
   const hostRoot = document.querySelector(HOST_ROOT_SELECTOR);
-
-  if (activeHostDisplayControls) {
-    activeHostDisplayControls.cleanup();
-  }
-
-  activeHostDisplayControls = createDisplayControlsManager({
-    firebase,
-    state,
-    role: "host",
-  });
   const hostUiState = {
     questionPool: normalizeTriviaQuestionPool(null),
     hasLoadedQuestionPool: false,
@@ -332,6 +424,26 @@ export function initHostPage({ firebase, state, renderStatus }) {
     activeDifficultyFilter: "all",
     randomPreviewQuestionId: "",
     selectedQuestionId: "",
+    activeTab: HOST_DEFAULT_TAB_KEY,
+    displayState: normalizeDisplayState(null, state.getState().eventConfig),
+    hasLoadedDisplayState: false,
+    isDisplayStateLoading: true,
+    displayUnavailableMessage: "",
+    displayWarning: "",
+    displayActionMessage: {
+      text: "",
+      tone: "info",
+    },
+    displayComposerType: DISPLAY_MODE_WAITING,
+    displayWaitingDraft: getWaitingStatusFallback(state.getState().eventConfig),
+    displayAnnouncementTitleDraft: "",
+    displayAnnouncementMessageDraft: "",
+    displayWinnerTitleDraft: "",
+    displayWinnerMessageDraft: "",
+    isDisplayWaitingDirty: false,
+    isDisplayAnnouncementDirty: false,
+    isDisplayWinnerDirty: false,
+    isDisplayActionBusy: false,
     controllerMessage: {
       text: "",
       tone: "info",
@@ -407,6 +519,76 @@ export function initHostPage({ firebase, state, renderStatus }) {
     hostUiState.bingoPreparationMessage = { text, tone };
   }
 
+  function getEventConfig() {
+    return state.getState().eventConfig || null;
+  }
+
+  function setDisplayActionMessage(text = "", tone = "info") {
+    hostUiState.displayActionMessage = { text, tone };
+  }
+
+  function syncHostDisplayDrafts(displayState, { force = false } = {}) {
+    if (force || !hostUiState.isDisplayWaitingDirty) {
+      hostUiState.displayWaitingDraft = displayState.statusMessage || getWaitingStatusFallback(getEventConfig());
+    }
+
+    if (force || !hostUiState.isDisplayAnnouncementDirty) {
+      hostUiState.displayAnnouncementTitleDraft = displayState.announcement.title;
+      hostUiState.displayAnnouncementMessageDraft = displayState.announcement.message;
+    }
+
+    if (force || !hostUiState.isDisplayWinnerDirty) {
+      hostUiState.displayWinnerTitleDraft = displayState.winner.title;
+      hostUiState.displayWinnerMessageDraft = displayState.winner.message;
+    }
+  }
+
+  function getHostConnectionSummary() {
+    const currentState = state.getState();
+    const firebaseState = currentState.firebase || firebase.getStatus();
+    const configSource = currentState.configSource;
+
+    if (!firebaseState.isConnected) {
+      return {
+        label: firebaseState.isConfigured ? "Fallback" : "Offline",
+        tone: "warning",
+      };
+    }
+
+    if (configSource !== "firebase") {
+      return {
+        label: "Fallback",
+        tone: "warning",
+      };
+    }
+
+    return {
+      label: "Connected",
+      tone: "success",
+    };
+  }
+
+  function getDisplayComposerDrafts() {
+    if (hostUiState.displayComposerType === DISPLAY_MODE_ANNOUNCEMENT) {
+      return {
+        title: hostUiState.displayAnnouncementTitleDraft,
+        message: hostUiState.displayAnnouncementMessageDraft,
+      };
+    }
+
+    if (hostUiState.displayComposerType === DISPLAY_MODE_WINNER) {
+      return {
+        title: hostUiState.displayWinnerTitleDraft,
+        message: hostUiState.displayWinnerMessageDraft,
+      };
+    }
+
+    return {
+      title: "",
+      message: hostUiState.displayWaitingDraft,
+    };
+  }
+
   function buildDisplayAutoFollowWarning(actionMessage, displayModeLabel) {
     const firebaseStatusMessage = normalizeTextInput(firebase.getStatus().message);
     const fallbackGuidance = `Use the Display controls to switch to ${displayModeLabel} manually.`;
@@ -436,6 +618,229 @@ export function initHostPage({ firebase, state, renderStatus }) {
     );
   }
 
+  function attachHostDisplayListener() {
+    if (typeof unsubscribeHostDisplayListener === "function") {
+      return;
+    }
+
+    hostUiState.isDisplayStateLoading = !hostUiState.hasLoadedDisplayState;
+
+    unsubscribeHostDisplayListener = firebase.listenEventData(
+      DISPLAY_PATH,
+      (displayValue, listenerStatus) => {
+        if (!listenerStatus.ok) {
+          hostUiState.isDisplayStateLoading = false;
+
+          if (hostUiState.hasLoadedDisplayState) {
+            hostUiState.displayWarning = "Live Display updates are temporarily unavailable. Showing the last loaded Display state.";
+          } else {
+            hostUiState.displayUnavailableMessage = "The current Display state is temporarily unavailable right now.";
+          }
+
+          renderHostTriviaController();
+          return;
+        }
+
+        const normalizedDisplayState = normalizeDisplayState(displayValue, getEventConfig());
+
+        hostUiState.displayState = normalizedDisplayState;
+        hostUiState.hasLoadedDisplayState = true;
+        hostUiState.isDisplayStateLoading = false;
+        hostUiState.displayUnavailableMessage = "";
+        hostUiState.displayWarning = normalizedDisplayState.isValid
+          ? ""
+          : "Some saved Display fields were invalid. Showing the safe normalized Display state.";
+        syncHostDisplayDrafts(normalizedDisplayState);
+        renderHostTriviaController();
+      }
+    );
+  }
+
+  async function patchHostDisplayState(nextPatch, successMessage) {
+    hostUiState.isDisplayActionBusy = true;
+    setDisplayActionMessage();
+    renderHostTriviaController();
+
+    const updateSucceeded = await firebase.updateEventData(DISPLAY_PATH, nextPatch);
+
+    hostUiState.isDisplayActionBusy = false;
+
+    if (!updateSucceeded) {
+      setDisplayActionMessage(
+        firebase.getStatus().message || "The Display update could not be saved right now. Please try again.",
+        "error"
+      );
+      renderHostTriviaController();
+      return false;
+    }
+
+    setDisplayActionMessage(successMessage, "success");
+    renderHostTriviaController();
+    return true;
+  }
+
+  async function switchHostDisplayMode(mode, { successMessage = "" } = {}) {
+    const normalizedMode = normalizeTextInput(mode);
+
+    if (normalizedMode === DISPLAY_MODE_WAITING) {
+      await patchHostDisplayState(
+        buildDisplayModePatch({
+          mode: DISPLAY_MODE_WAITING,
+          updatedByRole: "host",
+        }),
+        successMessage || "Display switched to Waiting mode."
+      );
+      return;
+    }
+
+    if (normalizedMode === DISPLAY_MODE_BINGO) {
+      await patchHostDisplayState(
+        buildDisplayModePatch({
+          mode: DISPLAY_MODE_BINGO,
+          updatedByRole: "host",
+        }),
+        successMessage || "Display switched to Bingo mode."
+      );
+      return;
+    }
+
+    if (normalizedMode === DISPLAY_MODE_WINNER) {
+      if (!hasWinnerDisplayMessage(hostUiState.displayState)) {
+        setDisplayActionMessage("A saved Winner message is required before the display can switch to Winner mode.", "warning");
+        renderHostTriviaController();
+        return;
+      }
+
+      await patchHostDisplayState(
+        buildDisplayModePatch({
+          mode: DISPLAY_MODE_WINNER,
+          updatedByRole: "host",
+        }),
+        successMessage || "Display switched to the saved Winner message."
+      );
+      return;
+    }
+
+    if (normalizedMode === DISPLAY_MODE_ANNOUNCEMENT) {
+      if (!hasAnnouncementDisplayMessage(hostUiState.displayState)) {
+        setDisplayActionMessage("A saved Announcement message is required before the display can switch to Announcement mode.", "warning");
+        renderHostTriviaController();
+        return;
+      }
+
+      await patchHostDisplayState(
+        buildDisplayModePatch({
+          mode: DISPLAY_MODE_ANNOUNCEMENT,
+          updatedByRole: "host",
+        }),
+        successMessage || "Display switched to the saved Announcement."
+      );
+      return;
+    }
+
+    if (normalizedMode === DISPLAY_MODE_TRIVIA || normalizedMode === DISPLAY_MODE_TRIVIA_REVEAL) {
+      const canUseTriviaMode = normalizedMode === DISPLAY_MODE_TRIVIA
+        ? canDisplayTriviaRound(hostUiState.currentRound)
+        : canDisplayTriviaRevealRound(hostUiState.currentRound);
+
+      if (!canUseTriviaMode) {
+        setDisplayActionMessage(
+          normalizedMode === DISPLAY_MODE_TRIVIA
+            ? "Trivia mode is only available when a valid Live Trivia round is active."
+            : "Trivia Reveal is only available after the current Live Trivia round has been revealed.",
+          "warning"
+        );
+        renderHostTriviaController();
+        return;
+      }
+
+      await patchHostDisplayState(
+        buildDisplayModePatch({
+          mode: normalizedMode,
+          triviaRoundId: hostUiState.currentRound.roundId,
+          updatedByRole: "host",
+        }),
+        successMessage || (
+          normalizedMode === DISPLAY_MODE_TRIVIA
+            ? `Display switched to Trivia mode for round ${hostUiState.currentRound.roundId}.`
+            : `Display switched to Trivia Reveal for round ${hostUiState.currentRound.roundId}.`
+        )
+      );
+    }
+  }
+
+  async function submitHostDisplayComposer() {
+    const composerType = normalizeHostDisplayComposerType(hostUiState.displayComposerType);
+
+    if (composerType === DISPLAY_MODE_WAITING) {
+      const waitingPatch = buildWaitingDisplayPatch({
+        statusMessage: hostUiState.displayWaitingDraft,
+        eventConfig: getEventConfig(),
+        updatedByRole: "host",
+      });
+      const saveSucceeded = await patchHostDisplayState(waitingPatch, "Waiting screen updated.");
+
+      if (saveSucceeded) {
+        hostUiState.displayWaitingDraft = waitingPatch.statusMessage;
+        hostUiState.isDisplayWaitingDirty = false;
+      }
+
+      return;
+    }
+
+    if (composerType === DISPLAY_MODE_ANNOUNCEMENT) {
+      const validationResult = validateAnnouncementDraft({
+        title: hostUiState.displayAnnouncementTitleDraft,
+        message: hostUiState.displayAnnouncementMessageDraft,
+      });
+
+      if (!validationResult.ok) {
+        setDisplayActionMessage(validationResult.message, "warning");
+        renderHostTriviaController();
+        return;
+      }
+
+      const announcementPatch = buildAnnouncementDisplayPatch({
+        title: validationResult.title,
+        message: validationResult.message,
+        updatedByRole: "host",
+      });
+      const saveSucceeded = await patchHostDisplayState(announcementPatch, "Announcement pushed to the public display.");
+
+      if (saveSucceeded) {
+        hostUiState.displayAnnouncementTitleDraft = announcementPatch.announcement.title;
+        hostUiState.displayAnnouncementMessageDraft = announcementPatch.announcement.message;
+        hostUiState.isDisplayAnnouncementDirty = false;
+      }
+
+      return;
+    }
+
+    const validationResult = validateWinnerDraft({
+      title: hostUiState.displayWinnerTitleDraft,
+      message: hostUiState.displayWinnerMessageDraft,
+    });
+
+    if (!validationResult.ok) {
+      setDisplayActionMessage(validationResult.message, "warning");
+      renderHostTriviaController();
+      return;
+    }
+
+    const winnerPatch = buildWinnerDisplayPatch({
+      title: validationResult.title,
+      message: validationResult.message,
+      updatedByRole: "host",
+    });
+    const saveSucceeded = await patchHostDisplayState(winnerPatch, "Winner message pushed to the public display.");
+
+    if (saveSucceeded) {
+      hostUiState.displayWinnerTitleDraft = winnerPatch.winner.title;
+      hostUiState.displayWinnerMessageDraft = winnerPatch.winner.message;
+      hostUiState.isDisplayWinnerDirty = false;
+    }
+  }
+
   function getActiveContentNode() {
     return hostRoot?.querySelector("[data-role-content]") || null;
   }
@@ -451,13 +856,13 @@ export function initHostPage({ firebase, state, renderStatus }) {
   }
 
   function getFilteredQuestions() {
-    if (hostUiState.activeDifficultyFilter === "all") {
-      return hostUiState.questionPool.orderedQuestions.slice();
-    }
+    const difficultyFilteredQuestions = hostUiState.activeDifficultyFilter === "all"
+      ? hostUiState.questionPool.orderedQuestions.slice()
+      : hostUiState.questionPool.orderedQuestions.filter(
+        (question) => question.difficulty === hostUiState.activeDifficultyFilter
+      );
 
-    return hostUiState.questionPool.orderedQuestions.filter(
-      (question) => question.difficulty === hostUiState.activeDifficultyFilter
-    );
+    return difficultyFilteredQuestions;
   }
 
   function getRandomPreviewQuestion() {
@@ -690,22 +1095,16 @@ export function initHostPage({ firebase, state, renderStatus }) {
 
     countsNode.innerHTML = "";
 
-    [
-      createCountDefinition("Easy", hostUiState.questionPool.counts.easy),
-      createCountDefinition("Medium", hostUiState.questionPool.counts.medium),
-      createCountDefinition("Hard", hostUiState.questionPool.counts.hard),
-      createCountDefinition("Total", hostUiState.questionPool.counts.total),
-    ].forEach((countDefinition) => {
-      const countNode = document.createElement("article");
-      const valueNode = document.createElement("strong");
-      const labelNode = document.createElement("span");
+    const stripNode = document.createElement("p");
 
-      countNode.className = "trivia-count-card";
-      valueNode.textContent = countDefinition.value;
-      labelNode.textContent = countDefinition.label;
-      countNode.append(valueNode, labelNode);
-      countsNode.append(countNode);
-    });
+    stripNode.className = "host-trivia-count-strip";
+    stripNode.innerHTML = `
+      <span><strong>Easy:</strong> ${escapeHtml(String(hostUiState.questionPool.counts.easy))}</span>
+      <span><strong>Medium:</strong> ${escapeHtml(String(hostUiState.questionPool.counts.medium))}</span>
+      <span><strong>Hard:</strong> ${escapeHtml(String(hostUiState.questionPool.counts.hard))}</span>
+      <span><strong>Total:</strong> ${escapeHtml(String(hostUiState.questionPool.counts.total))}</span>
+    `;
+    countsNode.append(stripNode);
   }
 
   function renderPoolStatusNotice(statusNode) {
@@ -1025,18 +1424,11 @@ export function initHostPage({ firebase, state, renderStatus }) {
       return;
     }
 
-    const summaryGridNode = document.createElement("div");
-    const answersTotalNode = document.createElement("article");
-    const totalValueNode = document.createElement("strong");
-    const totalLabelNode = document.createElement("span");
+    const summaryNode = document.createElement("p");
 
-    summaryGridNode.className = "trivia-count-grid";
-    answersTotalNode.className = "trivia-count-card";
-    totalValueNode.textContent = String(hostUiState.answerStats.totalSubmitted);
-    totalLabelNode.textContent = "Submitted";
-    answersTotalNode.append(totalValueNode, totalLabelNode);
-    summaryGridNode.append(answersTotalNode);
-    statsPanelNode.append(summaryGridNode);
+    summaryNode.className = "host-trivia-answer-strip";
+    summaryNode.innerHTML = `<strong>Submitted:</strong> ${escapeHtml(String(hostUiState.answerStats.totalSubmitted))}`;
+    statsPanelNode.append(summaryNode);
 
     const optionStatsGridNode = document.createElement("div");
 
@@ -1517,6 +1909,1059 @@ export function initHostPage({ firebase, state, renderStatus }) {
     winnersNode.append(panelNode);
   }
 
+  function createHostSectionHeading({ eyebrow, title, description = "" }) {
+    const headingNode = document.createElement("div");
+    const eyebrowNode = document.createElement("p");
+    const titleNode = document.createElement("h3");
+
+    headingNode.className = "host-section-heading";
+    eyebrowNode.className = "eyebrow";
+    eyebrowNode.textContent = eyebrow;
+    titleNode.textContent = title;
+    headingNode.append(eyebrowNode, titleNode);
+
+    if (description) {
+      const descriptionNode = document.createElement("p");
+
+      descriptionNode.className = "player-copy";
+      descriptionNode.textContent = description;
+      headingNode.append(descriptionNode);
+    }
+
+    return headingNode;
+  }
+
+  function renderDisplayNotices(noticesNode) {
+    if (!noticesNode) {
+      return;
+    }
+
+    noticesNode.innerHTML = "";
+
+    if (hostUiState.displayActionMessage.text) {
+      noticesNode.append(createNoticeNode(hostUiState.displayActionMessage.text, hostUiState.displayActionMessage.tone));
+    }
+
+    if (hostUiState.isDisplayStateLoading && !hostUiState.hasLoadedDisplayState) {
+      noticesNode.append(createNoticeNode("Loading the current Display state...", "info"));
+      return;
+    }
+
+    if (hostUiState.displayUnavailableMessage && !hostUiState.hasLoadedDisplayState) {
+      noticesNode.append(createNoticeNode(hostUiState.displayUnavailableMessage, "warning"));
+      return;
+    }
+
+    if (hostUiState.displayWarning) {
+      noticesNode.append(createNoticeNode(hostUiState.displayWarning, "warning"));
+    }
+  }
+
+  function getDisplayModeSummary() {
+    const currentDisplayState = hostUiState.displayState;
+    const currentMode = normalizeTextInput(currentDisplayState.mode);
+
+    if (currentMode === DISPLAY_MODE_ANNOUNCEMENT) {
+      return {
+        title: getDisplayMessageTitle(currentDisplayState.announcement, "Saved Announcement"),
+        summary: currentDisplayState.announcement.message || "No announcement text has been saved yet.",
+        source: "Saved message",
+      };
+    }
+
+    if (currentMode === DISPLAY_MODE_WINNER) {
+      return {
+        title: getDisplayMessageTitle(currentDisplayState.winner, "Saved Winner Message"),
+        summary: currentDisplayState.winner.message || "No winner message has been saved yet.",
+        source: "Saved message",
+      };
+    }
+
+    if (currentMode === DISPLAY_MODE_TRIVIA) {
+      return {
+        title: "Trivia Question Live",
+        summary: "The public display is following the active Trivia question.",
+        source: "Live game",
+      };
+    }
+
+    if (currentMode === DISPLAY_MODE_TRIVIA_REVEAL) {
+      return {
+        title: "Trivia Reveal Live",
+        summary: "The public display is showing the current Trivia reveal.",
+        source: "Live game",
+      };
+    }
+
+    if (currentMode === DISPLAY_MODE_BINGO) {
+      return {
+        title: "Bingo Board Live",
+        summary: "The public display is following the active Bingo round.",
+        source: "Live game",
+      };
+    }
+
+    return {
+      title: "Waiting Screen",
+      summary: currentDisplayState.statusMessage || getWaitingStatusFallback(getEventConfig()),
+      source: "Saved message",
+    };
+  }
+
+  function renderDisplayStatus(statusNode) {
+    if (!statusNode) {
+      return;
+    }
+
+    statusNode.innerHTML = "";
+
+    const summaryDefinition = getDisplayModeSummary();
+    const panelNode = document.createElement("section");
+    const countsGridNode = document.createElement("div");
+    const copyNode = document.createElement("p");
+
+    panelNode.className = "hub-panel host-operator-card";
+    countsGridNode.className = "trivia-count-grid host-summary-grid";
+    copyNode.className = "player-copy";
+    copyNode.textContent = summaryDefinition.summary;
+
+    countsGridNode.append(
+      createSummaryCountCard({
+        label: "Current Mode",
+        value: formatDisplayModeLabel(hostUiState.displayState.mode),
+      }),
+      createSummaryCountCard({
+        label: "Source",
+        value: summaryDefinition.source,
+      })
+    );
+
+    panelNode.append(
+      createHostSectionHeading({
+        eyebrow: "Send to Display",
+        title: summaryDefinition.title,
+      }),
+      countsGridNode,
+      copyNode
+    );
+
+    statusNode.append(panelNode);
+  }
+
+  function renderDisplayQuickModes(buttonsNode) {
+    if (!buttonsNode) {
+      return;
+    }
+
+    const isBusy = hostUiState.isDisplayActionBusy;
+    const canSwitchToTrivia = canDisplayTriviaRound(hostUiState.currentRound);
+    const canSwitchToReveal = canDisplayTriviaRevealRound(hostUiState.currentRound);
+
+    buttonsNode.innerHTML = `
+      <section class="hub-panel host-operator-card">
+        ${`
+          <div class="host-section-heading">
+            <p class="eyebrow">Quick Modes</p>
+            <h3>Display Shortcuts</h3>
+          </div>
+        `}
+        <div class="host-quick-mode-grid" role="toolbar" aria-label="Display modes">
+          ${[
+            {
+              mode: DISPLAY_MODE_WAITING,
+              label: "Waiting",
+              disabled: isBusy,
+            },
+            {
+              mode: DISPLAY_MODE_TRIVIA,
+              label: "Trivia",
+              disabled: isBusy || !canSwitchToTrivia,
+            },
+            {
+              mode: DISPLAY_MODE_TRIVIA_REVEAL,
+              label: "Reveal",
+              disabled: isBusy || !canSwitchToReveal,
+            },
+            {
+              mode: DISPLAY_MODE_BINGO,
+              label: "Bingo",
+              disabled: isBusy,
+            },
+            {
+              mode: DISPLAY_MODE_ANNOUNCEMENT,
+              label: "Announcement",
+              disabled: isBusy || !hasAnnouncementDisplayMessage(hostUiState.displayState),
+            },
+            {
+              mode: DISPLAY_MODE_WINNER,
+              label: "Winner",
+              disabled: isBusy || !hasWinnerDisplayMessage(hostUiState.displayState),
+            },
+          ].map((buttonDefinition) => `
+            <button
+              type="button"
+              class="hub-button host-quick-mode-button"
+              data-action="switch-host-display-mode"
+              data-display-mode="${buttonDefinition.mode}"
+              aria-pressed="${hostUiState.displayState.mode === buttonDefinition.mode ? "true" : "false"}"
+              ${buttonDefinition.disabled ? "disabled" : ""}
+            >
+              ${escapeHtml(buttonDefinition.label)}
+            </button>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderDisplayComposer(composerNode) {
+    if (!composerNode) {
+      return;
+    }
+
+    const composerType = normalizeHostDisplayComposerType(hostUiState.displayComposerType);
+    const composerDrafts = getDisplayComposerDrafts();
+    const isWaitingComposer = composerType === DISPLAY_MODE_WAITING;
+    const messageLabel = isWaitingComposer ? "Message" : "Message";
+
+    composerNode.innerHTML = `
+      <form class="hub-panel host-operator-card host-display-form" data-host-display-form novalidate>
+        <div class="host-section-heading">
+          <p class="eyebrow">Composer</p>
+          <h3>Show on Display</h3>
+          <p class="player-copy">Save the message and switch the public Display to it.</p>
+        </div>
+        <label class="form-field">
+          <span>Message Type</span>
+          <select class="form-input" data-host-display-type ${hostUiState.isDisplayActionBusy ? "disabled" : ""}>
+            <option value="${DISPLAY_MODE_WAITING}" ${composerType === DISPLAY_MODE_WAITING ? "selected" : ""}>Waiting</option>
+            <option value="${DISPLAY_MODE_ANNOUNCEMENT}" ${composerType === DISPLAY_MODE_ANNOUNCEMENT ? "selected" : ""}>Announcement</option>
+            <option value="${DISPLAY_MODE_WINNER}" ${composerType === DISPLAY_MODE_WINNER ? "selected" : ""}>Winner</option>
+          </select>
+        </label>
+        ${isWaitingComposer ? "" : `
+          <label class="form-field">
+            <span>Optional Title</span>
+            <input
+              type="text"
+              class="form-input"
+              value="${escapeHtml(composerDrafts.title)}"
+              data-host-display-title
+              ${hostUiState.isDisplayActionBusy ? "disabled" : ""}
+            >
+          </label>
+        `}
+        <label class="form-field">
+          <span>${messageLabel}</span>
+          <textarea
+            class="form-input form-textarea"
+            rows="${isWaitingComposer ? "3" : "5"}"
+            data-host-display-message
+            ${hostUiState.isDisplayActionBusy ? "disabled" : ""}
+          >${escapeHtml(composerDrafts.message)}</textarea>
+        </label>
+        <div class="host-display-form-actions">
+          <button
+            type="submit"
+            class="primary-button"
+            ${hostUiState.isDisplayActionBusy ? "disabled" : ""}
+          >
+            ${hostUiState.isDisplayActionBusy ? "Saving..." : "Show on Display"}
+          </button>
+        </div>
+      </form>
+    `;
+  }
+
+  function renderCompactQuestionList(questionListNode) {
+    if (!questionListNode) {
+      return;
+    }
+
+    questionListNode.innerHTML = "";
+    const scrollPanelNode = document.createElement("div");
+    scrollPanelNode.className = "host-scroll-panel host-question-scroll";
+
+    if (hostUiState.isQuestionPoolLoading && !hostUiState.hasLoadedQuestionPool) {
+      const loadingCopyNode = document.createElement("p");
+
+      loadingCopyNode.className = "player-copy host-trivia-list-empty";
+      loadingCopyNode.textContent = "Loading the current Trivia question pool...";
+      questionListNode.append(loadingCopyNode);
+      return;
+    }
+
+    if (hostUiState.questionPoolUnavailableMessage && !hostUiState.hasLoadedQuestionPool) {
+      const unavailableCopyNode = document.createElement("p");
+
+      unavailableCopyNode.className = "player-copy host-trivia-list-empty";
+      unavailableCopyNode.textContent = hostUiState.questionPoolUnavailableMessage;
+      questionListNode.append(unavailableCopyNode);
+      return;
+    }
+
+    if (hostUiState.questionPool.counts.total === 0) {
+      const emptyCopyNode = document.createElement("p");
+
+      emptyCopyNode.className = "player-copy host-trivia-list-empty";
+      emptyCopyNode.textContent = "No Trivia questions have been uploaded yet.";
+      questionListNode.append(emptyCopyNode);
+      return;
+    }
+
+    const filteredQuestions = getFilteredQuestions();
+
+    if (filteredQuestions.length === 0) {
+      const filterEmptyCopyNode = document.createElement("p");
+
+      filterEmptyCopyNode.className = "player-copy host-trivia-list-empty";
+      filterEmptyCopyNode.textContent = hostUiState.activeDifficultyFilter === "all"
+        ? "No saved Trivia questions are available right now."
+        : `No ${formatTriviaDifficultyLabel(hostUiState.activeDifficultyFilter).toLowerCase()} questions are in the current pool.`;
+      questionListNode.append(filterEmptyCopyNode);
+      return;
+    }
+
+    filteredQuestions.forEach((question) => {
+      scrollPanelNode.append(createTriviaQuestionListRow(
+        question,
+        hostUiState.selectedQuestionId === question.id
+      ));
+    });
+
+    questionListNode.append(scrollPanelNode);
+  }
+
+  function renderCompactRandomPreview(previewNode) {
+    if (!previewNode) {
+      return;
+    }
+
+    previewNode.innerHTML = "";
+
+    const previewQuestion = getRandomPreviewQuestion();
+    const panelNode = document.createElement("section");
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Random Preview",
+      title: previewQuestion ? "Local Random Pick" : "Ready for Random Pick",
+    }));
+
+    if (!previewQuestion) {
+      const helperCopyNode = document.createElement("p");
+
+      helperCopyNode.className = "player-copy";
+      helperCopyNode.textContent = "Use Random Easy, Medium, or Hard to preview one saved question locally.";
+      panelNode.append(helperCopyNode);
+      previewNode.append(panelNode);
+      return;
+    }
+
+    panelNode.append(createTriviaQuestionCard(previewQuestion, {
+      showHeading: false,
+      showId: false,
+    }));
+    previewNode.append(panelNode);
+  }
+
+  function renderCompactSelectedQuestionPreview(previewNode) {
+    if (!previewNode) {
+      return;
+    }
+
+    previewNode.innerHTML = "";
+
+    const selectedQuestion = getSelectedQuestion();
+    const panelNode = document.createElement("section");
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Selected Question",
+      title: selectedQuestion ? "Ready to Push" : "No Question Selected",
+    }));
+
+    if (!selectedQuestion) {
+      const helperCopyNode = document.createElement("p");
+
+      helperCopyNode.className = "player-copy";
+      helperCopyNode.textContent = "Choose one saved question before pushing a new Live Trivia round.";
+      panelNode.append(helperCopyNode);
+      previewNode.append(panelNode);
+      return;
+    }
+
+    panelNode.append(createTriviaQuestionCard(selectedQuestion, {
+      showHeading: false,
+      showId: false,
+    }));
+    previewNode.append(panelNode);
+  }
+
+  function renderCompactCurrentRound(roundNode) {
+    if (!roundNode) {
+      return;
+    }
+
+    roundNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const headerNode = document.createElement("div");
+    const titleWrapNode = document.createElement("div");
+    const eyebrowNode = document.createElement("p");
+    const titleNode = document.createElement("h3");
+    const statusBadgeNode = document.createElement("span");
+
+    panelNode.className = "hub-panel host-operator-card";
+    headerNode.className = "trivia-status-row";
+    eyebrowNode.className = "eyebrow";
+    eyebrowNode.textContent = "Current Trivia Round";
+    titleNode.textContent = hasActiveTriviaRound(hostUiState.currentRound)
+      ? "Live Question"
+      : "No Live Trivia Round";
+    statusBadgeNode.className = "trivia-status-badge";
+    statusBadgeNode.dataset.triviaStatus = hostUiState.currentRound.status;
+    statusBadgeNode.textContent = getTriviaRoundStatusLabel(hostUiState.currentRound.status);
+    titleWrapNode.append(eyebrowNode, titleNode);
+    headerNode.append(titleWrapNode, statusBadgeNode);
+    panelNode.append(headerNode);
+
+    if (!hasActiveTriviaRound(hostUiState.currentRound)) {
+      const helperCopyNode = document.createElement("p");
+
+      helperCopyNode.className = "player-copy";
+      helperCopyNode.textContent = "Select a saved question on the left, then push it live when you are ready.";
+      panelNode.append(helperCopyNode);
+      roundNode.append(panelNode);
+      return;
+    }
+
+    const statusCopyNode = document.createElement("p");
+
+    statusCopyNode.className = "player-copy";
+    statusCopyNode.textContent = hostUiState.currentRound.status === "revealed"
+      ? "The answer is revealed and the public display can switch to Trivia Reveal."
+      : hostUiState.currentRound.status === "locked"
+        ? "Answers are locked. Reveal when you are ready."
+        : "Answers are still live for players.";
+    panelNode.append(statusCopyNode);
+    panelNode.append(createTriviaQuestionCard(createRoundSnapshotQuestion(hostUiState.currentRound), {
+      showHeading: false,
+      showId: false,
+      showAnswer: hostUiState.currentRound.status === "revealed" || !!hostUiState.currentRound.revealedAt,
+    }));
+    roundNode.append(panelNode);
+  }
+
+  function renderBingoOperatorCounts(countsNode) {
+    if (!countsNode) {
+      return;
+    }
+
+    countsNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const countsGridNode = document.createElement("div");
+    const hasPreparedRound = hasPreparedBingoRound(hostUiState.bingoCurrentRound);
+    const countDefinitions = [
+      {
+        label: "Round Status",
+        value: getBingoRoundStatusLabel(hostUiState.bingoCurrentRound.status),
+      },
+      {
+        label: "Active Cards",
+        value: hasPreparedRound ? hostUiState.bingoStats.activeCardCount : 0,
+      },
+      {
+        label: "Draw Count",
+        value: hasPreparedRound ? hostUiState.bingoStats.drawCount : 0,
+      },
+      {
+        label: "Remaining",
+        value: hasPreparedRound ? hostUiState.bingoStats.remainingUndrawnItems : 0,
+      },
+      {
+        label: "Line Winners",
+        value: hasPreparedRound ? hostUiState.bingoStats.lineWinnerCount : 0,
+      },
+      {
+        label: "Blackout Winners",
+        value: hasPreparedRound ? hostUiState.bingoStats.blackoutWinnerCount : 0,
+      },
+    ];
+
+    panelNode.className = "hub-panel host-operator-card";
+    countsGridNode.className = "trivia-count-grid host-summary-grid";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Live Panel",
+      title: "Bingo Round Snapshot",
+    }));
+
+    countDefinitions.forEach((countDefinition) => {
+      countsGridNode.append(createSummaryCountCard(countDefinition));
+    });
+
+    panelNode.append(countsGridNode);
+    countsNode.append(panelNode);
+  }
+
+  function renderBingoOperatorActions(actionsNode) {
+    if (!actionsNode) {
+      return;
+    }
+
+    actionsNode.innerHTML = "";
+
+    const currentRound = hostUiState.bingoCurrentRound;
+    const isBusy = hostUiState.isPreparingBingoRound || hostUiState.isBingoActionBusy;
+    const hasPreparedRound = hasPreparedBingoRound(currentRound);
+    const undrawnItems = hasPreparedRound ? hostUiState.bingoStats.undrawnItems : [];
+    const panelNode = document.createElement("section");
+    const primaryActionsNode = document.createElement("div");
+    const manualRowNode = document.createElement("div");
+    const manualFieldNode = document.createElement("label");
+    const manualLabelNode = document.createElement("span");
+    const manualDrawSelectNode = document.createElement("select");
+    const roundCloseActionsNode = document.createElement("div");
+    const dangerActionsNode = document.createElement("div");
+    const prepareButton = createBingoActionButton({
+      action: "prepare-bingo-round",
+      label: hostUiState.isPreparingBingoRound ? "Preparing..." : "Prepare Round",
+      buttonClass: "primary-button",
+      disabled: hostUiState.isPreparingBingoRound
+        || hostUiState.isBingoActionBusy
+        || !hostUiState.hasLoadedBingoSourcePool
+        || !hostUiState.hasLoadedRegisteredPlayers
+        || !hostUiState.hasLoadedBingoCurrentRound,
+    });
+
+    panelNode.className = "hub-panel host-operator-card";
+    primaryActionsNode.className = "host-action-row";
+    manualRowNode.className = "host-inline-field-row";
+    manualFieldNode.className = "form-field host-inline-field";
+    manualLabelNode.textContent = "Manual Draw";
+    manualDrawSelectNode.id = "host-bingo-manual-draw-select";
+    manualDrawSelectNode.className = "form-input";
+    manualDrawSelectNode.disabled = !canDrawBingoRound(currentRound) || undrawnItems.length === 0 || isBusy;
+    roundCloseActionsNode.className = "host-action-row";
+    dangerActionsNode.className = "host-danger-actions";
+
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Action Row",
+      title: "Run the Bingo Round",
+    }));
+
+    primaryActionsNode.append(
+      prepareButton,
+      createBingoActionButton({
+        action: "lock-bingo-cards",
+        label: hostUiState.isBingoActionBusy ? "Working..." : "Lock Cards",
+        disabled: !canLockBingoRound(currentRound) || isBusy,
+      }),
+      createBingoActionButton({
+        action: "start-bingo-round",
+        label: hostUiState.isBingoActionBusy ? "Working..." : "Start Round",
+        disabled: !canStartBingoRound(currentRound) || isBusy,
+      }),
+      createBingoActionButton({
+        action: "draw-next-bingo-item",
+        label: hostUiState.isBingoActionBusy ? "Drawing..." : "Random Draw",
+        disabled: !canDrawBingoRound(currentRound) || undrawnItems.length === 0 || isBusy,
+      })
+    );
+
+    const placeholderOptionNode = document.createElement("option");
+
+    placeholderOptionNode.value = "";
+    placeholderOptionNode.textContent = undrawnItems.length > 0
+      ? "Select an undrawn item"
+      : "No undrawn items remain";
+    placeholderOptionNode.selected = true;
+    placeholderOptionNode.disabled = true;
+    manualDrawSelectNode.append(placeholderOptionNode);
+
+    undrawnItems.forEach((itemValue) => {
+      const optionNode = document.createElement("option");
+
+      optionNode.value = itemValue.id;
+      optionNode.textContent = itemValue.name;
+      manualDrawSelectNode.append(optionNode);
+    });
+
+    manualFieldNode.append(manualLabelNode, manualDrawSelectNode);
+    manualRowNode.append(
+      manualFieldNode,
+      createBingoActionButton({
+        action: "draw-selected-bingo-item",
+        label: hostUiState.isBingoActionBusy ? "Drawing..." : "Manual Draw",
+        disabled: !canDrawBingoRound(currentRound) || undrawnItems.length === 0 || isBusy,
+      })
+    );
+
+    roundCloseActionsNode.append(
+      createBingoActionButton({
+        action: "end-bingo-round",
+        label: hostUiState.isBingoActionBusy ? "Working..." : "End Round",
+        disabled: !canEndBingoRound(currentRound) || isBusy,
+      })
+    );
+
+    dangerActionsNode.append(
+      createBingoActionButton({
+        action: "clear-bingo-round",
+        label: hostUiState.isBingoActionBusy ? "Working..." : "Clear / Reset Current Bingo",
+        buttonClass: "secondary-button host-danger-button",
+        disabled: !canClearBingoRound(currentRound) || isBusy,
+      })
+    );
+
+    panelNode.append(primaryActionsNode, manualRowNode, roundCloseActionsNode, dangerActionsNode);
+    actionsNode.append(panelNode);
+  }
+
+  function renderBingoLatestDraw(latestDrawNode) {
+    if (!latestDrawNode) {
+      return;
+    }
+
+    latestDrawNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const latestDraw = hostUiState.bingoStats.lastDraw;
+    const drawValueNode = document.createElement("div");
+    const drawMetaNode = document.createElement("p");
+
+    panelNode.className = "hub-panel host-operator-card host-latest-draw-panel";
+    drawValueNode.className = "host-latest-draw-value";
+    drawMetaNode.className = "player-copy";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Latest Draw",
+      title: latestDraw ? `${latestDraw.sequence}. ${latestDraw.name}` : "No Draw Yet",
+    }));
+
+    if (!latestDraw) {
+      drawMetaNode.textContent = "Random Draw or Manual Draw will appear here once the round is in progress.";
+      panelNode.append(drawMetaNode);
+      latestDrawNode.append(panelNode);
+      return;
+    }
+
+    drawValueNode.textContent = latestDraw.name;
+    drawMetaNode.textContent = latestDraw.method === BINGO_DRAW_METHOD_MANUAL
+      ? "Manual draw"
+      : "Random draw";
+    panelNode.append(drawValueNode, drawMetaNode);
+    latestDrawNode.append(panelNode);
+  }
+
+  function renderBingoDrawHistoryCompact(drawHistoryNode) {
+    if (!drawHistoryNode) {
+      return;
+    }
+
+    drawHistoryNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Recent Draws",
+      title: "Draw History",
+    }));
+
+    if (hostUiState.bingoStats.orderedDraws.length === 0) {
+      const emptyCopyNode = document.createElement("p");
+
+      emptyCopyNode.className = "player-copy";
+      emptyCopyNode.textContent = "No Bingo items have been drawn yet.";
+      panelNode.append(emptyCopyNode);
+      drawHistoryNode.append(panelNode);
+      return;
+    }
+
+    const listNode = document.createElement("ol");
+    const scrollPanelNode = document.createElement("div");
+
+    listNode.className = "host-draw-list";
+    scrollPanelNode.className = "host-scroll-panel";
+
+    hostUiState.bingoStats.orderedDraws
+      .slice()
+      .sort((leftDraw, rightDraw) => rightDraw.sequence - leftDraw.sequence)
+      .slice(0, 12)
+      .forEach((drawRecord) => {
+        const listItemNode = document.createElement("li");
+        const sequenceNode = document.createElement("span");
+        const nameNode = document.createElement("span");
+        const methodNode = document.createElement("span");
+
+        listItemNode.className = "host-draw-list__item";
+        sequenceNode.className = "host-draw-list__sequence";
+        nameNode.className = "host-draw-list__name";
+        methodNode.className = "host-draw-list__method";
+        sequenceNode.textContent = `${drawRecord.sequence}.`;
+        nameNode.textContent = drawRecord.name;
+        methodNode.textContent = drawRecord.method === BINGO_DRAW_METHOD_MANUAL ? "Manual" : "Random";
+        listItemNode.append(sequenceNode, nameNode, methodNode);
+        listNode.append(listItemNode);
+      });
+
+    scrollPanelNode.append(listNode);
+    panelNode.append(scrollPanelNode);
+    drawHistoryNode.append(panelNode);
+  }
+
+  function renderBingoWinnerTable(winnersNode) {
+    if (!winnersNode) {
+      return;
+    }
+
+    winnersNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const winnerRows = hostUiState.bingoStats.winnerRows.filter(
+      (winnerRow) => winnerRow.blackoutWinner === true || winnerRow.lineWinner === true
+    );
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Players' Vault Awards",
+      title: "Award Progress",
+    }));
+
+    if (winnerRows.length === 0) {
+      const emptyCopyNode = document.createElement("p");
+
+      emptyCopyNode.className = "player-copy";
+      emptyCopyNode.textContent = "No Players' Vault awards yet.";
+      panelNode.append(emptyCopyNode);
+      winnersNode.append(panelNode);
+      return;
+    }
+
+    const tableWrapNode = document.createElement("div");
+
+    tableWrapNode.className = "host-awards-table-wrap host-scroll-panel";
+    tableWrapNode.innerHTML = `
+      <table class="host-awards-table">
+        <thead>
+          <tr>
+            <th scope="col">Player</th>
+            <th scope="col">Line Count</th>
+            <th scope="col">Completed Lines</th>
+            <th scope="col">Blackout</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${winnerRows.map((winnerRow) => `
+            <tr>
+              <td>${escapeHtml(winnerRow.playerName || winnerRow.playerId)}</td>
+              <td>${Array.isArray(winnerRow.completedLines) ? winnerRow.completedLines.length : 0}</td>
+              <td>${escapeHtml(formatCompletedBingoLines(winnerRow.completedLines))}</td>
+              <td>${winnerRow.blackoutWinner === true ? "Yes" : "No"}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+
+    panelNode.append(tableWrapNode);
+    winnersNode.append(panelNode);
+  }
+
+  function renderBingoCurrentRoundCompact(roundNode) {
+    if (!roundNode) {
+      return;
+    }
+
+    roundNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const headerNode = document.createElement("div");
+    const titleWrapNode = document.createElement("div");
+    const eyebrowNode = document.createElement("p");
+    const titleNode = document.createElement("h3");
+    const statusBadgeNode = document.createElement("span");
+
+    panelNode.className = "hub-panel host-operator-card";
+    headerNode.className = "trivia-status-row";
+    eyebrowNode.className = "eyebrow";
+    eyebrowNode.textContent = "Live Status";
+    titleNode.textContent = hasPreparedBingoRound(hostUiState.bingoCurrentRound)
+      ? "Current Bingo Round"
+      : "No Bingo Round Prepared";
+    statusBadgeNode.className = "trivia-status-badge";
+    statusBadgeNode.dataset.bingoStatus = hostUiState.bingoCurrentRound.status;
+    statusBadgeNode.textContent = getBingoRoundStatusLabel(hostUiState.bingoCurrentRound.status);
+    titleWrapNode.append(eyebrowNode, titleNode);
+    headerNode.append(titleWrapNode, statusBadgeNode);
+    panelNode.append(headerNode);
+
+    if (!hasPreparedBingoRound(hostUiState.bingoCurrentRound)) {
+      const helperCopyNode = document.createElement("p");
+
+      helperCopyNode.className = "player-copy";
+      helperCopyNode.textContent = "Prepare a shared round on the left after the Bingo pool is ready.";
+      panelNode.append(helperCopyNode);
+      roundNode.append(panelNode);
+      return;
+    }
+
+    const currentRound = hostUiState.bingoCurrentRound;
+    const lastDraw = hostUiState.bingoStats.lastDraw;
+
+    panelNode.append(
+      createTriviaQuestionMetaRow("Cards Locked", currentRound.cardsLocked ? "Yes" : "No"),
+      createTriviaQuestionMetaRow(
+        "Latest Draw",
+        lastDraw
+          ? `${lastDraw.sequence}. ${lastDraw.name} (${lastDraw.method})`
+          : "No items have been drawn yet."
+      )
+    );
+
+    roundNode.append(panelNode);
+  }
+
+  function renderAdvancedWarnings(warningsNode) {
+    if (!warningsNode) {
+      return;
+    }
+
+    warningsNode.innerHTML = "";
+
+    const warningMessages = new Set();
+
+    [
+      hostUiState.questionPoolWarning,
+      hostUiState.questionPoolUnavailableMessage,
+      hostUiState.currentRoundWarning,
+      hostUiState.currentRoundUnavailableMessage,
+      hostUiState.answersWarning,
+      hostUiState.answersUnavailableMessage,
+      hostUiState.displayWarning,
+      hostUiState.displayUnavailableMessage,
+      hostUiState.bingoSourcePoolWarning,
+      hostUiState.bingoSourcePoolUnavailableMessage,
+      hostUiState.registeredPlayersWarning,
+      hostUiState.registeredPlayersUnavailableMessage,
+      hostUiState.bingoCurrentRoundWarning,
+      hostUiState.bingoCurrentRoundUnavailableMessage,
+      hostUiState.bingoCardsWarning,
+      hostUiState.bingoCardsUnavailableMessage,
+      hostUiState.bingoDrawsWarning,
+      hostUiState.bingoDrawsUnavailableMessage,
+      hostUiState.bingoWinnersWarning,
+      hostUiState.bingoWinnersUnavailableMessage,
+      hostUiState.bingoWinnerPersistenceWarning,
+    ].forEach((warningMessage) => {
+      if (warningMessage) {
+        warningMessages.add(warningMessage);
+      }
+    });
+
+    hostUiState.displayState.errors.forEach((displayError) => {
+      if (displayError) {
+        warningMessages.add(displayError);
+      }
+    });
+
+    if (hostUiState.bingoStats.cardErrors.length > 0) {
+      warningMessages.add("Some malformed Bingo cards were ignored in host statistics.");
+    }
+
+    if (hostUiState.bingoStats.drawErrors.length > 0) {
+      warningMessages.add("Some malformed Bingo draw records were ignored in host statistics.");
+    }
+
+    if (hostUiState.bingoStats.winnerErrors.length > 0) {
+      warningMessages.add("Some malformed persisted Bingo winner records were ignored.");
+    }
+
+    const panelNode = document.createElement("section");
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Internal",
+      title: "Warnings and Normalization Notes",
+    }));
+
+    if (warningMessages.size === 0) {
+      const emptyCopyNode = document.createElement("p");
+
+      emptyCopyNode.className = "player-copy";
+      emptyCopyNode.textContent = "No current diagnostic warnings.";
+      panelNode.append(emptyCopyNode);
+      warningsNode.append(panelNode);
+      return;
+    }
+
+    const listNode = document.createElement("ul");
+
+    listNode.className = "host-advanced-list";
+    warningMessages.forEach((warningMessage) => {
+      const listItemNode = document.createElement("li");
+
+      listItemNode.textContent = warningMessage;
+      listNode.append(listItemNode);
+    });
+
+    panelNode.append(listNode);
+    warningsNode.append(panelNode);
+  }
+
+  function renderAdvancedDisplayDiagnostics(displayNode) {
+    if (!displayNode) {
+      return;
+    }
+
+    displayNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const currentDisplayState = hostUiState.displayState;
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Advanced",
+      title: "Display Diagnostics",
+    }));
+    panelNode.append(
+      createTriviaQuestionMetaRow("Mode", formatDisplayModeLabel(currentDisplayState.mode)),
+      createTriviaQuestionMetaRow("Trivia Round ID", currentDisplayState.triviaRoundId || "None"),
+      createTriviaQuestionMetaRow("Updated At", formatUpdatedAt(currentDisplayState.updatedAt)),
+      createTriviaQuestionMetaRow("Updated By", currentDisplayState.updatedByRole || "Unknown"),
+      createTriviaQuestionMetaRow("Waiting Message", currentDisplayState.statusMessage || "None"),
+      createTriviaQuestionMetaRow(
+        "Saved Announcement",
+        currentDisplayState.announcement.message
+          ? `${getDisplayMessageTitle(currentDisplayState.announcement, "Announcement")}: ${currentDisplayState.announcement.message}`
+          : "None"
+      ),
+      createTriviaQuestionMetaRow(
+        "Saved Winner",
+        currentDisplayState.winner.message
+          ? `${getDisplayMessageTitle(currentDisplayState.winner, "Winner")}: ${currentDisplayState.winner.message}`
+          : "None"
+      )
+    );
+
+    displayNode.append(panelNode);
+  }
+
+  function renderAdvancedTriviaDiagnostics(triviaNode) {
+    if (!triviaNode) {
+      return;
+    }
+
+    triviaNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const currentRound = hostUiState.currentRound;
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Advanced",
+      title: "Trivia Diagnostics",
+    }));
+    panelNode.append(
+      createTriviaQuestionMetaRow("Question Pool Saved", formatUpdatedAt(hostUiState.questionPool.updatedAt)),
+      createTriviaQuestionMetaRow("Selected Question ID", hostUiState.selectedQuestionId || "None"),
+      createTriviaQuestionMetaRow("Random Preview ID", hostUiState.randomPreviewQuestionId || "None"),
+      createTriviaQuestionMetaRow("Current Round ID", currentRound.roundId || "None"),
+      createTriviaQuestionMetaRow("Current Question ID", currentRound.questionId || "None"),
+      createTriviaQuestionMetaRow("Pushed At", formatUpdatedAt(currentRound.pushedAt)),
+      createTriviaQuestionMetaRow("Locked At", formatUpdatedAt(currentRound.lockedAt)),
+      createTriviaQuestionMetaRow("Revealed At", formatUpdatedAt(currentRound.revealedAt))
+    );
+
+    if (hasActiveTriviaRound(currentRound)) {
+      panelNode.append(createTriviaQuestionCard(createRoundSnapshotQuestion(currentRound), {
+        showHeading: true,
+        showId: true,
+        showAnswer: true,
+      }));
+    }
+
+    triviaNode.append(panelNode);
+  }
+
+  function renderAdvancedBingoDiagnostics(bingoNode) {
+    if (!bingoNode) {
+      return;
+    }
+
+    bingoNode.innerHTML = "";
+
+    const panelNode = document.createElement("section");
+    const currentRound = hostUiState.bingoCurrentRound;
+
+    panelNode.className = "hub-panel host-operator-card";
+    panelNode.append(createHostSectionHeading({
+      eyebrow: "Advanced",
+      title: "Bingo Diagnostics",
+    }));
+    panelNode.append(
+      createTriviaQuestionMetaRow("Round ID", currentRound.roundId || "None"),
+      createTriviaQuestionMetaRow("Registered Players", String(hostUiState.registeredPlayerCount)),
+      createTriviaQuestionMetaRow("Source Pool", String(hostUiState.bingoSourcePool.count)),
+      createTriviaQuestionMetaRow("Target Pool", String(getCurrentBingoTargetPoolSize())),
+      createTriviaQuestionMetaRow("Actual Pool", String(currentRound.actualPoolSize || 0)),
+      createTriviaQuestionMetaRow("Prepared At", formatUpdatedAt(currentRound.preparedAt)),
+      createTriviaQuestionMetaRow("Cards Locked At", formatUpdatedAt(currentRound.cardsLockedAt)),
+      createTriviaQuestionMetaRow("Started At", formatUpdatedAt(currentRound.startedAt)),
+      createTriviaQuestionMetaRow("Ended At", formatUpdatedAt(currentRound.endedAt)),
+      createTriviaQuestionMetaRow(
+        "Last Draw At",
+        formatUpdatedAt(hostUiState.bingoStats.lastDraw?.drawnAt || "")
+      )
+    );
+
+    const distributionGridNode = document.createElement("div");
+
+    distributionGridNode.className = "trivia-count-grid host-summary-grid";
+    hostUiState.bingoStats.distribution.forEach((distributionEntry) => {
+      distributionGridNode.append(createSummaryCountCard({
+        label: distributionEntry.label,
+        value: distributionEntry.count,
+      }));
+    });
+    panelNode.append(distributionGridNode);
+
+    const winnerRows = hostUiState.bingoStats.winnerRows.filter(
+      (winnerRow) => winnerRow.blackoutWinner === true || winnerRow.lineWinner === true
+    );
+
+    if (winnerRows.length > 0) {
+      const tableWrapNode = document.createElement("div");
+
+      tableWrapNode.className = "host-awards-table-wrap host-scroll-panel";
+      tableWrapNode.innerHTML = `
+        <table class="host-awards-table">
+          <thead>
+            <tr>
+              <th scope="col">Player</th>
+              <th scope="col">First Line At</th>
+              <th scope="col">Blackout At</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${winnerRows.map((winnerRow) => `
+              <tr>
+                <td>${escapeHtml(winnerRow.playerName || winnerRow.playerId)}</td>
+                <td>${escapeHtml(formatUpdatedAt(winnerRow.firstLineAt))}</td>
+                <td>${escapeHtml(formatUpdatedAt(winnerRow.blackoutAt))}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+
+      panelNode.append(tableWrapNode);
+    }
+
+    bingoNode.append(panelNode);
+  }
+
   function renderHostTriviaController() {
     const contentNode = getActiveContentNode();
 
@@ -1524,120 +2969,212 @@ export function initHostPage({ firebase, state, renderStatus }) {
       return;
     }
 
-    const lastSavedLabel = formatUpdatedAt(hostUiState.questionPool.updatedAt);
+    const activeTab = normalizeHostTabKey(hostUiState.activeTab);
+    const connectionSummary = getHostConnectionSummary();
+    const eventName = normalizeTextInput(getEventConfig()?.eventName) || "A2Z Event";
+    const filteredTriviaQuestions = getFilteredQuestions();
+    const selectedQuestion = getSelectedQuestion();
+    const hasLoadedTriviaQuestions = hostUiState.hasLoadedQuestionPool && !hostUiState.questionPoolUnavailableMessage;
+    const isTriviaQuestionSelectDisabled = !hasLoadedTriviaQuestions || filteredTriviaQuestions.length === 0;
+    const isSelectedQuestionVisible = !!selectedQuestion && filteredTriviaQuestions.some(
+      (question) => question.id === selectedQuestion.id
+    );
+
+    hostUiState.activeTab = activeTab;
 
     contentNode.innerHTML = `
-      <div class="admin-sections">
-        <div data-host-display-controls></div>
+      <div class="host-operator-screen">
+        <section class="hub-panel host-operator-bar">
+          <div class="host-operator-bar__copy">
+            <p class="eyebrow">Host Console</p>
+            <h2>${escapeHtml(eventName)}</h2>
+          </div>
+          <div class="host-operator-bar__meta">
+            <span class="host-operator-chip" data-tone="${escapeHtml(connectionSummary.tone)}">
+              Connection: ${escapeHtml(connectionSummary.label)}
+            </span>
+            <button type="button" class="secondary-button" data-action="lock-role">Lock Host</button>
+          </div>
+        </section>
 
-        <section class="player-section admin-section">
-          <div class="player-section-header">
-            <div>
-              <p class="eyebrow">Live Trivia Controller</p>
-              <h3>Run the Current Trivia Round</h3>
-              <p class="player-copy">Select a saved Trivia question, push it live, watch realtime answer totals, then lock, reveal, or clear the round.</p>
+        <div class="host-tab-shell">
+        <div class="host-tab-list" role="tablist" aria-label="Host sections">
+          ${HOST_TAB_DEFINITIONS.map((tabDefinition) => `
+            <button
+              type="button"
+              id="host-tab-${tabDefinition.key}"
+              class="hub-button host-tab-button"
+              data-action="switch-host-tab"
+              data-host-tab="${tabDefinition.key}"
+              role="tab"
+              aria-selected="${activeTab === tabDefinition.key ? "true" : "false"}"
+              aria-controls="host-panel-${tabDefinition.key}"
+              tabindex="${activeTab === tabDefinition.key ? "0" : "-1"}"
+            >
+              ${escapeHtml(tabDefinition.label)}
+            </button>
+          `).join("")}
+        </div>
+
+        <section
+          id="host-panel-display"
+          class="host-tab-panel"
+          role="tabpanel"
+          aria-labelledby="host-tab-display"
+          ${activeTab === "display" ? "" : "hidden"}
+        >
+          <div class="host-panel-stack">
+            <div data-host-display-notices></div>
+            <div data-host-display-status></div>
+            <div data-host-display-quick-modes></div>
+            <div data-host-display-composer></div>
+          </div>
+        </section>
+
+        <section
+          id="host-panel-trivia"
+          class="host-tab-panel"
+          role="tabpanel"
+          aria-labelledby="host-tab-trivia"
+          ${activeTab === "trivia" ? "" : "hidden"}
+        >
+          <div class="host-panel-stack">
+            <div data-host-live-notices></div>
+            <div class="host-action-row" data-host-live-actions></div>
+            <div class="host-operator-workspace">
+              <div class="host-operator-main">
+                <section class="hub-panel host-operator-card">
+                  <div class="host-section-heading">
+                    <p class="eyebrow">Trivia Operator</p>
+                    <h3>Question Selector</h3>
+                  </div>
+                  <div class="host-trivia-selector-grid">
+                    <label class="form-field host-inline-field host-trivia-selector-field host-trivia-selector-field--question">
+                      <span>Question</span>
+                      <select
+                        class="form-input"
+                        data-host-trivia-question-select
+                        ${isTriviaQuestionSelectDisabled ? "disabled" : ""}
+                      >
+                        <option value="" ${isSelectedQuestionVisible ? "" : "selected"}>Select a saved question</option>
+                        ${filteredTriviaQuestions.map((question) => `
+                          <option
+                            value="${escapeHtml(question.id)}"
+                            ${hostUiState.selectedQuestionId === question.id ? "selected" : ""}
+                          >
+                            ${escapeHtml(formatTriviaQuestionOptionLabel(question))}
+                          </option>
+                        `).join("")}
+                      </select>
+                    </label>
+                    <label class="form-field host-inline-field host-trivia-selector-field">
+                      <span>Difficulty</span>
+                      <select class="form-input" data-host-trivia-filter>
+                        ${HOST_FILTER_DEFINITIONS.map((filterDefinition) => `
+                          <option
+                            value="${escapeHtml(filterDefinition.key)}"
+                            ${hostUiState.activeDifficultyFilter === filterDefinition.key ? "selected" : ""}
+                          >
+                            ${escapeHtml(filterDefinition.label)}
+                          </option>
+                        `).join("")}
+                      </select>
+                    </label>
+                  </div>
+                  <div data-host-trivia-counts></div>
+                  <div data-host-trivia-status></div>
+                  <div class="trivia-toolbar trivia-random-actions host-toolbar-row host-random-button-row" role="toolbar" aria-label="Random trivia preview">
+                    ${["easy", "medium", "hard"].map((difficulty) => `
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        data-action="preview-random-trivia"
+                        data-difficulty="${difficulty}"
+                        ${hostUiState.questionPool.counts[difficulty] > 0 ? "" : "disabled"}
+                      >
+                        Random ${escapeHtml(difficulty.charAt(0).toUpperCase() + difficulty.slice(1))}
+                      </button>
+                    `).join("")}
+                  </div>
+                  <div data-host-random-preview></div>
+                  <div data-host-trivia-questions></div>
+                </section>
+              </div>
+              <aside class="host-operator-side">
+                <div data-host-current-round></div>
+                <div data-host-answer-stats></div>
+              </aside>
             </div>
           </div>
-          <div data-host-live-notices></div>
-          <div data-host-selected-question></div>
-          <div class="admin-button-row trivia-live-actions" data-host-live-actions></div>
-          <div data-host-current-round></div>
-          <div data-host-answer-stats></div>
         </section>
 
-        <section class="player-section admin-section">
-          <div class="player-section-header">
-            <div>
-              <p class="eyebrow">Trivia Question Browser</p>
-              <h3>Saved Question Pool</h3>
-              <p class="player-copy">Browse and filter the saved Trivia Question Pool. The latest realtime pool is the source of truth for every push.</p>
+        <section
+          id="host-panel-bingo"
+          class="host-tab-panel"
+          role="tabpanel"
+          aria-labelledby="host-tab-bingo"
+          ${activeTab === "bingo" ? "" : "hidden"}
+        >
+          <div class="host-panel-stack">
+            <div data-host-bingo-notices></div>
+            <div data-host-bingo-actions></div>
+            <div class="host-operator-workspace">
+              <div class="host-operator-main">
+                <div data-host-bingo-latest-draw></div>
+                <div data-host-bingo-draw-history></div>
+                <div data-host-bingo-winners></div>
+              </div>
+              <aside class="host-operator-side">
+                <div data-host-bingo-current-round></div>
+                <div data-host-bingo-counts></div>
+              </aside>
             </div>
           </div>
-          <div class="trivia-count-grid" data-host-trivia-counts></div>
-          <p class="admin-meta">Last saved: <span data-host-trivia-updated-at>${escapeHtml(lastSavedLabel)}</span></p>
-          <div data-host-trivia-status></div>
-          <div class="trivia-toolbar" role="toolbar" aria-label="Filter trivia questions">
-            ${HOST_FILTER_DEFINITIONS.map((filterDefinition) => `
-              <button
-                type="button"
-                class="hub-button trivia-filter-button"
-                data-action="filter-trivia-questions"
-                data-difficulty="${filterDefinition.key}"
-                aria-pressed="${hostUiState.activeDifficultyFilter === filterDefinition.key ? "true" : "false"}"
-              >
-                ${escapeHtml(filterDefinition.label)}
-              </button>
-            `).join("")}
-          </div>
-          <div class="trivia-toolbar trivia-random-actions" role="toolbar" aria-label="Random trivia preview">
-            ${["easy", "medium", "hard"].map((difficulty) => `
-              <button
-                type="button"
-                class="secondary-button"
-                data-action="preview-random-trivia"
-                data-difficulty="${difficulty}"
-                ${hostUiState.questionPool.counts[difficulty] > 0 ? "" : "disabled"}
-              >
-                Random ${escapeHtml(difficulty.charAt(0).toUpperCase() + difficulty.slice(1))}
-              </button>
-            `).join("")}
-          </div>
-          <div data-host-random-preview></div>
-          <div class="trivia-question-list" data-host-trivia-questions></div>
         </section>
 
-        <section class="player-section admin-section">
-          <div class="player-section-header">
-            <div>
-              <p class="eyebrow">Bingo Controller</p>
-              <h3>Run the Current Bingo Round</h3>
-              <p class="player-copy">Prepare a shared Bingo round, lock cards, start the round, draw items, track live match statistics, and persist detected winners without affecting Trivia.</p>
+        <section
+          id="host-panel-advanced"
+          class="host-tab-panel"
+          role="tabpanel"
+          aria-labelledby="host-tab-advanced"
+          ${activeTab === "advanced" ? "" : "hidden"}
+        >
+          <div class="host-panel-stack">
+            <div class="host-advanced-grid">
+              <div data-host-advanced-warnings></div>
+              <div data-host-advanced-display></div>
+              <div data-host-advanced-trivia></div>
+              <div data-host-advanced-bingo></div>
             </div>
           </div>
-          <div data-host-bingo-notices></div>
-          <div class="trivia-count-grid" data-host-bingo-counts></div>
-          <div class="admin-button-row" data-host-bingo-actions></div>
-          <div data-host-bingo-current-round></div>
-          <div class="bingo-host-live-grid">
-            <div data-host-bingo-distribution></div>
-            <div data-host-bingo-draw-history></div>
-            <div data-host-bingo-winners></div>
-          </div>
         </section>
-
-        <section class="player-section admin-section">
-          <div>
-            <p class="eyebrow">Reserved Host Areas</p>
-            <h3>Future Host Modules</h3>
-            <p class="player-copy">These controls stay reserved for later slices.</p>
-          </div>
-          <div class="placeholder-grid">
-            ${renderReservedCards(HOST_RESERVED_CARDS)}
-          </div>
-        </section>
+        </div>
       </div>
     `;
 
-    if (activeHostDisplayControls) {
-      activeHostDisplayControls.renderInto(contentNode.querySelector("[data-host-display-controls]"));
-    }
-
+    renderDisplayNotices(contentNode.querySelector("[data-host-display-notices]"));
+    renderDisplayStatus(contentNode.querySelector("[data-host-display-status]"));
+    renderDisplayQuickModes(contentNode.querySelector("[data-host-display-quick-modes]"));
+    renderDisplayComposer(contentNode.querySelector("[data-host-display-composer]"));
     renderControllerNotices(contentNode.querySelector("[data-host-live-notices]"));
-    renderSelectedQuestionPreview(contentNode.querySelector("[data-host-selected-question]"));
     renderActionButtons(contentNode.querySelector("[data-host-live-actions]"));
-    renderCurrentRoundPanel(contentNode.querySelector("[data-host-current-round]"));
+    renderCompactCurrentRound(contentNode.querySelector("[data-host-current-round]"));
     renderAnswerStats(contentNode.querySelector("[data-host-answer-stats]"));
     renderCounts(contentNode.querySelector("[data-host-trivia-counts]"));
     renderPoolStatusNotice(contentNode.querySelector("[data-host-trivia-status]"));
-    renderQuestionList(contentNode.querySelector("[data-host-trivia-questions]"));
-    renderRandomPreview(contentNode.querySelector("[data-host-random-preview]"));
+    renderCompactQuestionList(contentNode.querySelector("[data-host-trivia-questions]"));
+    renderCompactRandomPreview(contentNode.querySelector("[data-host-random-preview]"));
     renderBingoPreparationNotices(contentNode.querySelector("[data-host-bingo-notices]"));
-    renderBingoPreparationCounts(contentNode.querySelector("[data-host-bingo-counts]"));
-    renderBingoPreparationActions(contentNode.querySelector("[data-host-bingo-actions]"));
-    renderBingoCurrentRoundPanel(contentNode.querySelector("[data-host-bingo-current-round]"));
-    renderBingoMatchDistribution(contentNode.querySelector("[data-host-bingo-distribution]"));
-    renderBingoDrawHistory(contentNode.querySelector("[data-host-bingo-draw-history]"));
-    renderBingoWinnerList(contentNode.querySelector("[data-host-bingo-winners]"));
+    renderBingoOperatorActions(contentNode.querySelector("[data-host-bingo-actions]"));
+    renderBingoLatestDraw(contentNode.querySelector("[data-host-bingo-latest-draw]"));
+    renderBingoDrawHistoryCompact(contentNode.querySelector("[data-host-bingo-draw-history]"));
+    renderBingoWinnerTable(contentNode.querySelector("[data-host-bingo-winners]"));
+    renderBingoCurrentRoundCompact(contentNode.querySelector("[data-host-bingo-current-round]"));
+    renderBingoOperatorCounts(contentNode.querySelector("[data-host-bingo-counts]"));
+    renderAdvancedWarnings(contentNode.querySelector("[data-host-advanced-warnings]"));
+    renderAdvancedDisplayDiagnostics(contentNode.querySelector("[data-host-advanced-display]"));
+    renderAdvancedTriviaDiagnostics(contentNode.querySelector("[data-host-advanced-trivia]"));
+    renderAdvancedBingoDiagnostics(contentNode.querySelector("[data-host-advanced-bingo]"));
   }
 
   function attachTriviaQuestionPoolListener() {
@@ -2719,6 +4256,7 @@ export function initHostPage({ firebase, state, renderStatus }) {
       activeHostRoot === rootNode
       && activeHostClickHandler
       && activeHostInputHandler
+      && activeHostChangeHandler
       && activeHostSubmitHandler
     ) {
       return;
@@ -2732,15 +4270,15 @@ export function initHostPage({ firebase, state, renderStatus }) {
       activeHostRoot.removeEventListener("input", activeHostInputHandler);
     }
 
+    if (activeHostRoot && activeHostChangeHandler) {
+      activeHostRoot.removeEventListener("change", activeHostChangeHandler);
+    }
+
     if (activeHostRoot && activeHostSubmitHandler) {
       activeHostRoot.removeEventListener("submit", activeHostSubmitHandler);
     }
 
     activeHostClickHandler = async (event) => {
-      if (activeHostDisplayControls && await activeHostDisplayControls.handleClick(event)) {
-        return;
-      }
-
       const actionNode = event.target.closest("[data-action]");
 
       if (!actionNode) {
@@ -2754,9 +4292,23 @@ export function initHostPage({ firebase, state, renderStatus }) {
         return;
       }
 
-      if (action === "filter-trivia-questions") {
-        hostUiState.activeDifficultyFilter = actionNode.dataset.difficulty || "all";
-        renderHostTriviaController();
+      if (action === "switch-host-tab") {
+        const nextTab = normalizeHostTabKey(actionNode.dataset.hostTab);
+
+        if (hostUiState.activeTab !== nextTab) {
+          hostUiState.activeTab = nextTab;
+          renderHostTriviaController();
+        }
+
+        return;
+      }
+
+      if (action === "switch-host-display-mode") {
+        if (hostUiState.isDisplayActionBusy) {
+          return;
+        }
+
+        await switchHostDisplayMode(actionNode.dataset.displayMode || "");
         return;
       }
 
@@ -2871,19 +4423,91 @@ export function initHostPage({ firebase, state, renderStatus }) {
     };
 
     activeHostInputHandler = (event) => {
-      if (activeHostDisplayControls) {
-        activeHostDisplayControls.handleInput(event);
+      const targetNode = event.target;
+
+      if (targetNode instanceof HTMLInputElement && targetNode.matches("[data-host-display-title]")) {
+        const composerType = normalizeHostDisplayComposerType(hostUiState.displayComposerType);
+
+        if (composerType === DISPLAY_MODE_ANNOUNCEMENT) {
+          hostUiState.displayAnnouncementTitleDraft = targetNode.value;
+          hostUiState.isDisplayAnnouncementDirty = true;
+        } else if (composerType === DISPLAY_MODE_WINNER) {
+          hostUiState.displayWinnerTitleDraft = targetNode.value;
+          hostUiState.isDisplayWinnerDirty = true;
+        }
+
+        return;
+      }
+
+      if (targetNode instanceof HTMLTextAreaElement && targetNode.matches("[data-host-display-message]")) {
+        const composerType = normalizeHostDisplayComposerType(hostUiState.displayComposerType);
+
+        if (composerType === DISPLAY_MODE_WAITING) {
+          hostUiState.displayWaitingDraft = targetNode.value;
+          hostUiState.isDisplayWaitingDirty = true;
+          return;
+        }
+
+        if (composerType === DISPLAY_MODE_ANNOUNCEMENT) {
+          hostUiState.displayAnnouncementMessageDraft = targetNode.value;
+          hostUiState.isDisplayAnnouncementDirty = true;
+          return;
+        }
+
+        hostUiState.displayWinnerMessageDraft = targetNode.value;
+        hostUiState.isDisplayWinnerDirty = true;
+      }
+    };
+
+    activeHostChangeHandler = (event) => {
+      const targetNode = event.target;
+
+      if (targetNode instanceof HTMLSelectElement && targetNode.matches("[data-host-display-type]")) {
+        hostUiState.displayComposerType = normalizeHostDisplayComposerType(targetNode.value);
+        renderHostTriviaController();
+        return;
+      }
+
+      if (targetNode instanceof HTMLSelectElement && targetNode.matches("[data-host-trivia-filter]")) {
+        hostUiState.activeDifficultyFilter = normalizeHostDifficultyFilter(targetNode.value);
+
+        if (
+          hostUiState.selectedQuestionId
+          && !getFilteredQuestions().some((question) => question.id === hostUiState.selectedQuestionId)
+        ) {
+          hostUiState.selectedQuestionId = "";
+        }
+
+        renderHostTriviaController();
+        return;
+      }
+
+      if (targetNode instanceof HTMLSelectElement && targetNode.matches("[data-host-trivia-question-select]")) {
+        hostUiState.selectedQuestionId = normalizeTextInput(targetNode.value);
+        setControllerMessage();
+        renderHostTriviaController();
       }
     };
 
     activeHostSubmitHandler = async (event) => {
-      if (activeHostDisplayControls && await activeHostDisplayControls.handleSubmit(event)) {
+      const formNode = event.target;
+
+      if (!(formNode instanceof HTMLFormElement) || !formNode.matches("[data-host-display-form]")) {
         return;
       }
+
+      event.preventDefault();
+
+      if (hostUiState.isDisplayActionBusy) {
+        return;
+      }
+
+      await submitHostDisplayComposer();
     };
 
     rootNode.addEventListener("click", activeHostClickHandler);
     rootNode.addEventListener("input", activeHostInputHandler);
+    rootNode.addEventListener("change", activeHostChangeHandler);
     rootNode.addEventListener("submit", activeHostSubmitHandler);
     activeHostRoot = rootNode;
   }
@@ -2895,9 +4519,9 @@ export function initHostPage({ firebase, state, renderStatus }) {
     firebase,
     renderStatus,
     pinFieldName: "hostPin",
-    lockedIntroCopy: "Enter the Host PIN to unlock live event and display controls for this browser session.",
+    lockedIntroCopy: "Enter the Host PIN to unlock live Host controls for this browser session.",
     shellTitle: "Host Console",
-    shellCopy: "Host access is limited to live event operations and display coordination. Admin-only settings, exports, and destructive tools stay locked out.",
+    shellCopy: "Live event operations only.",
     setupCopy: "Host PIN setup is required before this page can be unlocked.",
     placeholderCards: HOST_RESERVED_CARDS,
     onUnlock() {
@@ -2906,6 +4530,7 @@ export function initHostPage({ firebase, state, renderStatus }) {
     },
     onRenderUnlocked({ rootNode }) {
       ensureHostEventHandlers(rootNode);
+      attachHostDisplayListener();
       attachTriviaQuestionPoolListener();
       attachCurrentRoundListener();
       attachBingoSourcePoolListener();

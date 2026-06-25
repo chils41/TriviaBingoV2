@@ -49,6 +49,7 @@ const ADMIN_ROOT_SELECTOR = "#admin-app";
 let activeAdminRoot = null;
 let activeAdminClickHandler = null;
 let activeAdminInputHandler = null;
+let activeAdminChangeHandler = null;
 let activeAdminSubmitHandler = null;
 let activeAdminDisplayControls = null;
 let hasBoundAdminBeforeUnload = false;
@@ -142,6 +143,507 @@ function renderBingoSourcePoolValidationErrors(errors) {
       </ul>
     </div>
   `;
+}
+
+function renderAdminImportFeedback(message, issues = []) {
+  const noticeMarkup = message?.text
+    ? `
+      <div class="notice-panel admin-import-notice" data-tone="${escapeHtml(message.tone || "info")}" aria-live="polite">
+        ${escapeHtml(message.text)}
+      </div>
+    `
+    : "";
+
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return noticeMarkup ? `<div class="admin-import-feedback">${noticeMarkup}</div>` : "";
+  }
+
+  const issueTone = issues.some((issue) => issue.tone === "error") ? "error" : "warning";
+  const issueTitle = issueTone === "error"
+    ? "Fix these CSV import issues before trying again:"
+    : "CSV import warnings:";
+  const issueItemsMarkup = issues
+    .map((issue) => {
+      const rowPrefix = Number.isInteger(issue.rowNumber) ? `Row ${issue.rowNumber}: ` : "";
+      return `<li>${escapeHtml(`${rowPrefix}${issue.message}`)}</li>`;
+    })
+    .join("");
+
+  return `
+    <div class="admin-import-feedback">
+      ${noticeMarkup}
+      <div class="notice-panel validation-panel admin-import-issues" data-tone="${escapeHtml(issueTone)}" aria-live="polite">
+        <p class="validation-title">${issueTitle}</p>
+        <ul class="validation-list">
+          ${issueItemsMarkup}
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
+function createImportIssue(message, tone = "error", rowNumber = null) {
+  return {
+    message: normalizeTextInput(message) || "Unknown CSV import issue.",
+    tone: tone === "warning" ? "warning" : "error",
+    rowNumber: Number.isInteger(rowNumber) ? rowNumber : null,
+  };
+}
+
+function normalizeCsvHeaderKey(value) {
+  return normalizeTextInput(value)
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+function trimTrailingEmptyCsvFields(values) {
+  const normalizedValues = Array.isArray(values) ? values.slice() : [];
+
+  while (normalizedValues.length > 1 && !normalizeTextInput(normalizedValues[normalizedValues.length - 1])) {
+    normalizedValues.pop();
+  }
+
+  return normalizedValues;
+}
+
+function isCsvRowBlank(values) {
+  return values.every((value) => !normalizeTextInput(value));
+}
+
+function formatImportCount(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function parseCsvText(sourceText) {
+  const text = String(sourceText ?? "").replace(/^\uFEFF/, "");
+  const rows = [];
+  let currentRow = [];
+  let currentField = "";
+  let inQuotes = false;
+  let currentRecordLineNumber = 1;
+  let physicalLineNumber = 1;
+  let lastCharWasRowDelimiter = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    lastCharWasRowDelimiter = false;
+
+    if (inQuotes) {
+      if (character === '"') {
+        if (text[index + 1] === '"') {
+          currentField += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+        continue;
+      }
+
+      if (character === "\r") {
+        if (text[index + 1] === "\n") {
+          index += 1;
+        }
+        currentField += "\n";
+        physicalLineNumber += 1;
+        continue;
+      }
+
+      if (character === "\n") {
+        currentField += "\n";
+        physicalLineNumber += 1;
+        continue;
+      }
+
+      currentField += character;
+      continue;
+    }
+
+    if (character === '"') {
+      if (!currentField) {
+        inQuotes = true;
+      } else {
+        currentField += character;
+      }
+      continue;
+    }
+
+    if (character === ",") {
+      currentRow.push(currentField);
+      currentField = "";
+      continue;
+    }
+
+    if (character === "\r" || character === "\n") {
+      if (character === "\r" && text[index + 1] === "\n") {
+        index += 1;
+      }
+
+      currentRow.push(currentField);
+      rows.push({
+        rowNumber: currentRecordLineNumber,
+        values: trimTrailingEmptyCsvFields(currentRow),
+      });
+      currentRow = [];
+      currentField = "";
+      physicalLineNumber += 1;
+      currentRecordLineNumber = physicalLineNumber;
+      lastCharWasRowDelimiter = true;
+      continue;
+    }
+
+    currentField += character;
+  }
+
+  if (inQuotes) {
+    return {
+      rows: [],
+      issues: [createImportIssue("CSV contains an unclosed quoted field.")],
+    };
+  }
+
+  if (!lastCharWasRowDelimiter || currentRow.length > 0 || currentField !== "") {
+    currentRow.push(currentField);
+    rows.push({
+      rowNumber: currentRecordLineNumber,
+      values: trimTrailingEmptyCsvFields(currentRow),
+    });
+  }
+
+  return {
+    rows,
+    issues: [],
+  };
+}
+
+function buildCsvTable(sourceText) {
+  const parseResult = parseCsvText(sourceText);
+
+  if (parseResult.issues.length > 0) {
+    return {
+      isValid: false,
+      headers: [],
+      dataRows: [],
+      issues: parseResult.issues,
+    };
+  }
+
+  const headerRowIndex = parseResult.rows.findIndex((row) => !isCsvRowBlank(row.values));
+
+  if (headerRowIndex < 0) {
+    return {
+      isValid: false,
+      headers: [],
+      dataRows: [],
+      issues: [createImportIssue("CSV is empty or missing a header row.")],
+    };
+  }
+
+  const headerRow = parseResult.rows[headerRowIndex];
+  const headers = headerRow.values.map((value) => normalizeTextInput(value));
+  const dataRows = parseResult.rows
+    .slice(headerRowIndex + 1)
+    .map((row) => ({
+      rowNumber: row.rowNumber,
+      values: trimTrailingEmptyCsvFields(row.values),
+    }))
+    .filter((row) => !isCsvRowBlank(row.values));
+
+  return {
+    isValid: true,
+    headers,
+    dataRows,
+    issues: [],
+  };
+}
+
+function buildCsvHeaderIndex(headers) {
+  return headers.reduce((headerIndex, headerValue, index) => {
+    const normalizedKey = normalizeCsvHeaderKey(headerValue);
+
+    if (normalizedKey && !headerIndex.has(normalizedKey)) {
+      headerIndex.set(normalizedKey, index);
+    }
+
+    return headerIndex;
+  }, new Map());
+}
+
+function getCsvHeaderPosition(headerIndex, aliases) {
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeCsvHeaderKey(alias);
+
+    if (headerIndex.has(normalizedAlias)) {
+      return headerIndex.get(normalizedAlias);
+    }
+  }
+
+  return -1;
+}
+
+function getCsvCellValue(row, columnIndex) {
+  if (columnIndex < 0) {
+    return "";
+  }
+
+  return normalizeTextInput(row.values[columnIndex] ?? "");
+}
+
+function resolveTriviaAnswerIndex(value, options) {
+  const normalizedValue = normalizeTextInput(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const letterMatch = normalizedValue.match(/^(?:option\s*)?([a-d])$/i);
+
+  if (letterMatch) {
+    return letterMatch[1].toUpperCase().charCodeAt(0) - 65;
+  }
+
+  const numberMatch = normalizedValue.match(/^(?:option\s*)?([1-4])$/i);
+
+  if (numberMatch) {
+    return Number(numberMatch[1]) - 1;
+  }
+
+  const normalizedOptionText = normalizedValue.toLowerCase();
+  const optionIndex = options.findIndex((optionValue) => optionValue.toLowerCase() === normalizedOptionText);
+
+  return optionIndex >= 0 ? optionIndex : null;
+}
+
+function convertTriviaCsvToDraft(sourceText) {
+  const tableResult = buildCsvTable(sourceText);
+
+  if (!tableResult.isValid) {
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues: tableResult.issues,
+      message: `Trivia CSV has ${formatImportCount(tableResult.issues.length, "error")}. Fix the file and try again.`,
+      tone: "error",
+    };
+  }
+
+  const headerIndex = buildCsvHeaderIndex(tableResult.headers);
+  const idColumnIndex = getCsvHeaderPosition(headerIndex, ["id"]);
+  const difficultyColumnIndex = getCsvHeaderPosition(headerIndex, ["difficulty"]);
+  const questionColumnIndex = getCsvHeaderPosition(headerIndex, ["question"]);
+  const optionAColumnIndex = getCsvHeaderPosition(headerIndex, ["optionA"]);
+  const optionBColumnIndex = getCsvHeaderPosition(headerIndex, ["optionB"]);
+  const optionCColumnIndex = getCsvHeaderPosition(headerIndex, ["optionC"]);
+  const optionDColumnIndex = getCsvHeaderPosition(headerIndex, ["optionD"]);
+  const correctOptionColumnIndex = getCsvHeaderPosition(headerIndex, ["correctOption"]);
+  const answerColumnIndex = getCsvHeaderPosition(headerIndex, ["answer"]);
+  const missingHeaders = [
+    idColumnIndex < 0 ? "id" : "",
+    difficultyColumnIndex < 0 ? "difficulty" : "",
+    questionColumnIndex < 0 ? "question" : "",
+    optionAColumnIndex < 0 ? "optionA" : "",
+    optionBColumnIndex < 0 ? "optionB" : "",
+    optionCColumnIndex < 0 ? "optionC" : "",
+    optionDColumnIndex < 0 ? "optionD" : "",
+  ].filter(Boolean);
+
+  if (correctOptionColumnIndex < 0 && answerColumnIndex < 0) {
+    missingHeaders.push("correctOption or answer");
+  }
+
+  if (missingHeaders.length > 0) {
+    const issues = missingHeaders.map((headerLabel) => createImportIssue(`Missing required CSV header: ${headerLabel}.`));
+
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues,
+      message: `Trivia CSV has ${formatImportCount(issues.length, "error")}. Fix the file and try again.`,
+      tone: "error",
+    };
+  }
+
+  if (tableResult.dataRows.length === 0) {
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues: [createImportIssue("Trivia CSV does not contain any question rows.")],
+      message: "Trivia CSV has 1 error. Fix the file and try again.",
+      tone: "error",
+    };
+  }
+
+  const questions = [];
+  const issues = [];
+  const seenIds = new Set();
+
+  tableResult.dataRows.forEach((row) => {
+    const questionId = getCsvCellValue(row, idColumnIndex);
+    const difficulty = getCsvCellValue(row, difficultyColumnIndex).toLowerCase();
+    const questionText = getCsvCellValue(row, questionColumnIndex);
+    const options = [
+      getCsvCellValue(row, optionAColumnIndex),
+      getCsvCellValue(row, optionBColumnIndex),
+      getCsvCellValue(row, optionCColumnIndex),
+      getCsvCellValue(row, optionDColumnIndex),
+    ];
+    const correctOptionValue = getCsvCellValue(row, correctOptionColumnIndex);
+    const answerValue = getCsvCellValue(row, answerColumnIndex);
+
+    if (!questionId) {
+      issues.push(createImportIssue("id is required.", "error", row.rowNumber));
+    } else if (seenIds.has(questionId)) {
+      issues.push(createImportIssue(`id "${questionId}" is duplicated in this CSV.`, "error", row.rowNumber));
+    } else {
+      seenIds.add(questionId);
+    }
+
+    if (!difficulty || !["easy", "medium", "hard"].includes(difficulty)) {
+      issues.push(createImportIssue("difficulty must be easy, medium, or hard.", "error", row.rowNumber));
+    }
+
+    if (!questionText) {
+      issues.push(createImportIssue("question is required.", "error", row.rowNumber));
+    }
+
+    options.forEach((optionValue, optionIndex) => {
+      if (!optionValue) {
+        issues.push(createImportIssue(`option${String.fromCharCode(65 + optionIndex)} is required.`, "error", row.rowNumber));
+      }
+    });
+
+    const resolvedCorrectOptionIndex = resolveTriviaAnswerIndex(correctOptionValue, options);
+    const resolvedAnswerIndex = resolveTriviaAnswerIndex(answerValue, options);
+    let resolvedIndex = resolvedCorrectOptionIndex;
+
+    if (resolvedIndex === null) {
+      resolvedIndex = resolvedAnswerIndex;
+    }
+
+    if (resolvedIndex === null) {
+      issues.push(createImportIssue("A valid correct answer is required.", "error", row.rowNumber));
+      return;
+    }
+
+    if (
+      resolvedCorrectOptionIndex !== null
+      && resolvedAnswerIndex !== null
+      && resolvedCorrectOptionIndex !== resolvedAnswerIndex
+    ) {
+      issues.push(createImportIssue("correctOption and answer disagree. correctOption was used.", "warning", row.rowNumber));
+    }
+
+    questions.push({
+      id: questionId,
+      difficulty,
+      question: questionText,
+      options,
+      answer: resolvedIndex,
+    });
+  });
+
+  const blockingIssues = issues.filter((issue) => issue.tone === "error");
+
+  if (blockingIssues.length > 0) {
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues,
+      message: `Trivia CSV has ${formatImportCount(blockingIssues.length, "error")}. Fix the file and try again.`,
+      tone: "error",
+    };
+  }
+
+  const draft = JSON.stringify(questions, null, 2);
+  const dryRunResult = parseTriviaQuestionPoolJson(draft);
+
+  if (!dryRunResult.isValid) {
+    const schemaIssues = dryRunResult.errors.map((errorMessage) => createImportIssue(errorMessage));
+
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues: schemaIssues,
+      message: `Trivia CSV has ${formatImportCount(schemaIssues.length, "error")}. Fix the file and try again.`,
+      tone: "error",
+    };
+  }
+
+  const warningCount = issues.length;
+  const tone = warningCount > 0 ? "warning" : "success";
+  const message = warningCount > 0
+    ? `Loaded ${formatImportCount(questions.length, "Trivia question")} from CSV with ${formatImportCount(warningCount, "warning")}. Review before saving.`
+    : `Loaded ${formatImportCount(questions.length, "Trivia question")} from CSV. Review before saving.`;
+
+  return {
+    isValid: true,
+    draft,
+    count: questions.length,
+    issues,
+    message,
+    tone,
+  };
+}
+
+function convertBingoCsvToDraft(sourceText) {
+  const tableResult = buildCsvTable(sourceText);
+
+  if (!tableResult.isValid) {
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues: tableResult.issues,
+      message: "Bingo CSV could not be imported. Fix the file and try again.",
+      tone: "error",
+    };
+  }
+
+  const headerIndex = buildCsvHeaderIndex(tableResult.headers);
+  let bottleNameColumnIndex = getCsvHeaderPosition(headerIndex, ["bottleName"]);
+
+  if (bottleNameColumnIndex < 0 && tableResult.headers.length === 1) {
+    bottleNameColumnIndex = 0;
+  }
+
+  if (bottleNameColumnIndex < 0) {
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues: [createImportIssue('Bingo CSV must include a "bottleName" header or use exactly one column.')],
+      message: "Bingo CSV could not be imported. Fix the file and try again.",
+      tone: "error",
+    };
+  }
+
+  const bottleNames = tableResult.dataRows
+    .map((row) => getCsvCellValue(row, bottleNameColumnIndex))
+    .filter(Boolean);
+
+  if (bottleNames.length === 0) {
+    return {
+      isValid: false,
+      draft: "",
+      count: 0,
+      issues: [createImportIssue("Bingo CSV does not contain any bottle rows.")],
+      message: "Bingo CSV could not be imported. Fix the file and try again.",
+      tone: "error",
+    };
+  }
+
+  return {
+    isValid: true,
+    draft: bottleNames.join("\n"),
+    count: bottleNames.length,
+    issues: [],
+    message: `Loaded ${formatImportCount(bottleNames.length, "Bingo bottle")} from CSV. Review before saving.`,
+    tone: "success",
+  };
 }
 
 function renderBottleListGroupsMarkup(groups) {
@@ -495,6 +997,8 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     bingoSourcePoolValidationErrors: [],
     bottleListValidationErrors: [],
     questionPoolValidationErrors: [],
+    bingoSourcePoolImportIssues: [],
+    questionPoolImportIssues: [],
     pageMessage: {
       text: "",
       tone: "info",
@@ -512,6 +1016,14 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       tone: "info",
     },
     questionPoolMessage: {
+      text: "",
+      tone: "info",
+    },
+    bingoSourcePoolImportMessage: {
+      text: "",
+      tone: "info",
+    },
+    questionPoolImportMessage: {
       text: "",
       tone: "info",
     },
@@ -546,6 +1058,24 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
   function setQuestionPoolMessage(text = "", tone = "info") {
     adminUiState.questionPoolMessage = { text, tone };
+  }
+
+  function setBingoSourcePoolImportMessage(text = "", tone = "info") {
+    adminUiState.bingoSourcePoolImportMessage = { text, tone };
+  }
+
+  function clearBingoSourcePoolImportFeedback() {
+    adminUiState.bingoSourcePoolImportIssues = [];
+    setBingoSourcePoolImportMessage();
+  }
+
+  function setQuestionPoolImportMessage(text = "", tone = "info") {
+    adminUiState.questionPoolImportMessage = { text, tone };
+  }
+
+  function clearQuestionPoolImportFeedback() {
+    adminUiState.questionPoolImportIssues = [];
+    setQuestionPoolImportMessage();
   }
 
   function setExportMessage(text = "", tone = "info") {
@@ -859,6 +1389,29 @@ export function initAdminPage({ firebase, state, renderStatus }) {
           ${renderSectionNotice(adminUiState.questionPoolMessage)}
           ${renderTriviaQuestionValidationErrors(adminUiState.questionPoolValidationErrors)}
           <form class="player-form admin-editor-form" data-admin-form="trivia-question-pool" novalidate>
+            <div class="admin-import-stack">
+              <div class="admin-import-row">
+                <button
+                  type="button"
+                  class="secondary-button admin-import-button"
+                  data-action="choose-trivia-question-pool-csv"
+                  ${isQuestionPoolBusy ? "disabled" : ""}
+                >
+                  Import Trivia CSV
+                </button>
+                <input
+                  type="file"
+                  class="admin-import-input"
+                  accept=".csv,text/csv"
+                  data-trivia-question-pool-csv-input
+                  aria-hidden="true"
+                  tabindex="-1"
+                  ${isQuestionPoolBusy ? "disabled" : ""}
+                >
+              </div>
+              <p class="admin-helper-copy">CSV import fills the box below. Review before saving.</p>
+              ${renderAdminImportFeedback(adminUiState.questionPoolImportMessage, adminUiState.questionPoolImportIssues)}
+            </div>
             <label class="form-field" for="admin-trivia-question-pool-json">
               <span>Paste Question Pool JSON</span>
               <textarea
@@ -901,6 +1454,29 @@ export function initAdminPage({ firebase, state, renderStatus }) {
           ${renderSectionNotice(adminUiState.bingoSourcePoolMessage)}
           ${renderBingoSourcePoolValidationErrors(adminUiState.bingoSourcePoolValidationErrors)}
           <form class="player-form admin-editor-form" data-admin-form="bingo-source-pool" novalidate>
+            <div class="admin-import-stack">
+              <div class="admin-import-row">
+                <button
+                  type="button"
+                  class="secondary-button admin-import-button"
+                  data-action="choose-bingo-source-pool-csv"
+                  ${isBingoSourcePoolBusy ? "disabled" : ""}
+                >
+                  Import Bingo CSV
+                </button>
+                <input
+                  type="file"
+                  class="admin-import-input"
+                  accept=".csv,text/csv"
+                  data-bingo-source-pool-csv-input
+                  aria-hidden="true"
+                  tabindex="-1"
+                  ${isBingoSourcePoolBusy ? "disabled" : ""}
+                >
+              </div>
+              <p class="admin-helper-copy">CSV import fills the box below. Review before saving.</p>
+              ${renderAdminImportFeedback(adminUiState.bingoSourcePoolImportMessage, adminUiState.bingoSourcePoolImportIssues)}
+            </div>
             <label class="form-field" for="admin-bingo-source-pool">
               <span>One Item Per Line</span>
               <textarea
@@ -1066,6 +1642,8 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     setBottleListMessage();
     setQuestionPoolMessage();
     setExportMessage();
+    clearBingoSourcePoolImportFeedback();
+    clearQuestionPoolImportFeedback();
     renderAdminContent();
 
     const [pagesValue, reviewLinksValue, bingoSourcePoolValue, bottleListValue, questionPoolValue] = await Promise.all([
@@ -1291,6 +1869,62 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     return previewResult;
   }
 
+  async function importTriviaQuestionPoolCsv(file) {
+    let sourceText = "";
+
+    try {
+      sourceText = await file.text();
+    } catch (error) {
+      console.error("[Event Engine] Trivia CSV import failed while reading the file.", error);
+      adminUiState.questionPoolImportIssues = [createImportIssue(`Could not read "${file.name}".`)];
+      setQuestionPoolImportMessage("Trivia CSV could not be imported. Fix the file and try again.", "error");
+      renderAdminContent();
+      return;
+    }
+
+    const importResult = convertTriviaCsvToDraft(sourceText);
+
+    adminUiState.questionPoolImportIssues = importResult.issues;
+    setQuestionPoolImportMessage(importResult.message, importResult.tone);
+
+    if (importResult.isValid) {
+      adminUiState.questionPoolDraft = importResult.draft;
+      adminUiState.questionPoolValidationErrors = [];
+      adminUiState.questionPoolPreview = null;
+      setQuestionPoolMessage();
+    }
+
+    renderAdminContent();
+  }
+
+  async function importBingoSourcePoolCsv(file) {
+    let sourceText = "";
+
+    try {
+      sourceText = await file.text();
+    } catch (error) {
+      console.error("[Event Engine] Bingo CSV import failed while reading the file.", error);
+      adminUiState.bingoSourcePoolImportIssues = [createImportIssue(`Could not read "${file.name}".`)];
+      setBingoSourcePoolImportMessage("Bingo CSV could not be imported. Fix the file and try again.", "error");
+      renderAdminContent();
+      return;
+    }
+
+    const importResult = convertBingoCsvToDraft(sourceText);
+
+    adminUiState.bingoSourcePoolImportIssues = importResult.issues;
+    setBingoSourcePoolImportMessage(importResult.message, importResult.tone);
+
+    if (importResult.isValid) {
+      adminUiState.bingoSourcePoolDraft = importResult.draft;
+      adminUiState.bingoSourcePoolValidationErrors = [];
+      adminUiState.bingoSourcePoolPreview = null;
+      setBingoSourcePoolMessage();
+    }
+
+    renderAdminContent();
+  }
+
   async function saveBottleList(formNode) {
     const sourceText = readBottleListDraft(formNode);
     const previewResult = parseBottleListSource(sourceText);
@@ -1371,6 +2005,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     adminUiState.bingoSourcePoolDraft = nextBingoSourcePoolPayload.sourceText;
     adminUiState.bingoSourcePoolValidationErrors = [];
     adminUiState.bingoSourcePoolPreview = previewResult;
+    clearBingoSourcePoolImportFeedback();
     setBingoSourcePoolMessage("Bingo bottle pool replaced in Firebase.", "success");
     renderAdminContent();
   }
@@ -1420,6 +2055,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       questions: adminUiState.questionPool.orderedQuestions,
       counts: adminUiState.questionPool.counts,
     };
+    clearQuestionPoolImportFeedback();
     setQuestionPoolMessage("Trivia Question Pool replaced in Firebase.", "success");
     renderAdminContent();
   }
@@ -1492,6 +2128,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     adminUiState.questionPoolDraft = reconstructTriviaQuestionPoolJson(adminUiState.questionPool);
     adminUiState.questionPoolValidationErrors = [];
     adminUiState.questionPoolPreview = null;
+    clearQuestionPoolImportFeedback();
     setQuestionPoolMessage("Trivia Question Pool cleared from Firebase.", "success");
     renderAdminContent();
   }
@@ -1528,6 +2165,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
     adminUiState.bingoSourcePoolDraft = "";
     adminUiState.bingoSourcePoolValidationErrors = [];
     adminUiState.bingoSourcePoolPreview = null;
+    clearBingoSourcePoolImportFeedback();
     setBingoSourcePoolMessage("Bingo bottle pool cleared from Firebase.", "success");
     renderAdminContent();
   }
@@ -1538,6 +2176,10 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
   if (activeAdminRoot && activeAdminInputHandler) {
     activeAdminRoot.removeEventListener("input", activeAdminInputHandler);
+  }
+
+  if (activeAdminRoot && activeAdminChangeHandler) {
+    activeAdminRoot.removeEventListener("change", activeAdminChangeHandler);
   }
 
   if (activeAdminRoot && activeAdminSubmitHandler) {
@@ -1594,6 +2236,17 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         return;
       }
 
+      if (actionNode.dataset.action === "choose-trivia-question-pool-csv") {
+        const formNode = actionNode.closest('[data-admin-form="trivia-question-pool"]');
+        const fileInput = formNode?.querySelector("[data-trivia-question-pool-csv-input]");
+
+        if (fileInput instanceof HTMLInputElement && !fileInput.disabled) {
+          fileInput.click();
+        }
+
+        return;
+      }
+
       if (actionNode.dataset.action === "clear-trivia-question-pool") {
         await clearQuestionPool();
         return;
@@ -1604,6 +2257,17 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
         if (formNode instanceof HTMLFormElement) {
           validateBingoSourcePool(formNode);
+        }
+
+        return;
+      }
+
+      if (actionNode.dataset.action === "choose-bingo-source-pool-csv") {
+        const formNode = actionNode.closest('[data-admin-form="bingo-source-pool"]');
+        const fileInput = formNode?.querySelector("[data-bingo-source-pool-csv-input]");
+
+        if (fileInput instanceof HTMLInputElement && !fileInput.disabled) {
+          fileInput.click();
         }
 
         return;
@@ -1640,6 +2304,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         adminUiState.questionPoolDraft = inputNode.value;
         adminUiState.questionPoolValidationErrors = [];
         adminUiState.questionPoolPreview = null;
+        clearQuestionPoolImportFeedback();
         setQuestionPoolMessage();
         return;
       }
@@ -1648,6 +2313,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
         adminUiState.bingoSourcePoolDraft = inputNode.value;
         adminUiState.bingoSourcePoolValidationErrors = [];
         adminUiState.bingoSourcePoolPreview = null;
+        clearBingoSourcePoolImportFeedback();
         setBingoSourcePoolMessage();
         return;
       }
@@ -1660,6 +2326,34 @@ export function initAdminPage({ firebase, state, renderStatus }) {
       adminUiState.bottleListValidationErrors = [];
       adminUiState.bottleListPreview = null;
       setBottleListMessage();
+    };
+
+    activeAdminChangeHandler = async (event) => {
+      const inputNode = event.target;
+
+      if (
+        !(inputNode instanceof HTMLInputElement)
+        || inputNode.type !== "file"
+        || !inputNode.files
+        || inputNode.files.length === 0
+      ) {
+        return;
+      }
+
+      const [file] = inputNode.files;
+
+      try {
+        if (inputNode.dataset.triviaQuestionPoolCsvInput !== undefined) {
+          await importTriviaQuestionPoolCsv(file);
+          return;
+        }
+
+        if (inputNode.dataset.bingoSourcePoolCsvInput !== undefined) {
+          await importBingoSourcePoolCsv(file);
+        }
+      } finally {
+        inputNode.value = "";
+      }
     };
 
     activeAdminSubmitHandler = async (event) => {
@@ -1705,6 +2399,7 @@ export function initAdminPage({ firebase, state, renderStatus }) {
 
     adminRoot.addEventListener("click", activeAdminClickHandler);
     adminRoot.addEventListener("input", activeAdminInputHandler);
+    adminRoot.addEventListener("change", activeAdminChangeHandler);
     adminRoot.addEventListener("submit", activeAdminSubmitHandler);
     activeAdminRoot = adminRoot;
   }

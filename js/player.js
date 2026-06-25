@@ -10,7 +10,6 @@ import {
   createEmptyBingoCurrentRound,
   createEmptyBingoPlayerCard,
   getBingoPlayerCardPath,
-  getBingoRoundStatusLabel,
   hasPreparedBingoRound,
   isBingoRoundOpen,
   isValidBingoPlayerCardForRound,
@@ -20,7 +19,6 @@ import {
 } from "./bingo-pool.js";
 import {
   calculateBingoWinnerMilestones,
-  getBingoLineLabel,
   getBingoRoundDrawsPath,
   normalizeBingoRoundDraws,
 } from "./bingo-live.js";
@@ -65,8 +63,14 @@ import {
 } from "./static-pages.js";
 
 const PLAYER_ROOT_SELECTOR = "#player-app";
-const PLAYER_TRIVIA_WAITING_MESSAGE = "Waiting for the next Trivia question...";
 const PLAYER_BINGO_WAITING_MESSAGE = "Waiting for the next Bingo round...";
+const PLAYER_BRAND_EYEBROW = "A2ZEventHubV0.2";
+const PLAYER_FALLBACK_EVENT_TITLE = "The Allocated Affair XV";
+const PLAYER_EVENT_TITLE_PLACEHOLDERS = new Set([
+  "a2z event",
+  "a2z event engine demo",
+  "a2z liquors event",
+]);
 
 let unsubscribePagesListener = null;
 let unsubscribeReviewLinksListener = null;
@@ -78,6 +82,7 @@ let unsubscribePlayerBingoCardListener = null;
 let unsubscribePlayerBingoDrawsListener = null;
 let activePlayerRoot = null;
 let activePlayerClickHandler = null;
+let activePlayerInputHandler = null;
 let activePlayerSubmitHandler = null;
 let hasBoundPlayerBeforeUnload = false;
 
@@ -86,28 +91,28 @@ const HUB_PANELS = [
     id: "trivia",
     label: "Trivia",
     title: "Trivia",
-    message: "Open Trivia to see the current live question, answer while it is live, and review the reveal.",
+    message: "Join the current question, submit your answer, and check the reveal.",
     kind: "trivia",
   },
   {
     id: "bingo",
     label: "Bingo",
     title: "Bingo",
-    message: "Open Bingo to view the current shared round, restore your saved 3x3 card, and shuffle while cards stay open.",
+    message: "Open your card, follow the latest calls, and shuffle while cards stay open.",
     kind: "bingo",
   },
   {
     id: "bottle-list",
     label: "Bottle List",
     title: "Bottle List",
-    message: "View the posted public bottle list for this event.",
+    message: "Browse the current bottle list for this event.",
     kind: "bottle-list",
   },
   ...STATIC_PAGE_DEFINITIONS.map((pageDefinition) => ({
     id: pageDefinition.hubPanelId,
     label: pageDefinition.label,
     title: pageDefinition.defaultTitle,
-    message: `${pageDefinition.label} is ready to view from Firebase content.`,
+    message: `View the latest ${pageDefinition.label} details for this event.`,
     kind: "static-page",
     pageKey: pageDefinition.key,
   })),
@@ -115,12 +120,99 @@ const HUB_PANELS = [
     id: "leave-review",
     label: "Leave Review",
     title: "Leave Review",
-    message: "Choose a review destination when links have been configured for this event.",
+    message: "Share your experience with a quick review.",
     kind: "review-links",
   },
 ];
 
+const VISIBLE_HUB_PANEL_IDS = [
+  "trivia",
+  "bingo",
+  "bottle-list",
+  "faq",
+  "rules-alerts",
+  "event-schedule",
+  "leave-review",
+];
+
+const HUB_PANEL_LABEL_OVERRIDES = {
+  "bottle-list": "Vault",
+  "rules-alerts": "Rules",
+};
+
 const DEFAULT_HUB_PANEL_ID = HUB_PANELS[0].id;
+
+function getPlayerEventTitle(eventConfig) {
+  const configuredEventTitle = normalizeTextInput(eventConfig?.eventName);
+
+  if (!configuredEventTitle) {
+    return PLAYER_FALLBACK_EVENT_TITLE;
+  }
+
+  if (PLAYER_EVENT_TITLE_PLACEHOLDERS.has(configuredEventTitle.toLowerCase())) {
+    return PLAYER_FALLBACK_EVENT_TITLE;
+  }
+
+  return configuredEventTitle;
+}
+
+function getPlayerCheckInSummary(currentPlayer) {
+  const preferredName = getPreferredName(currentPlayer?.name);
+
+  return currentPlayer
+    ? `Welcome ${preferredName}`
+    : "Check in to join Trivia, Bingo, and event updates.";
+}
+
+function getPlayerHubWelcomeMessage(eventName) {
+  return `Welcome to ${eventName}. Use this hub for Trivia, Bingo, bottle list, reviews, and event details.`;
+}
+
+function sanitizeZipInput(value) {
+  return String(value ?? "")
+    .replace(/\D+/g, "")
+    .slice(0, 5);
+}
+
+function isValidZipCode(value) {
+  return /^\d{5}$/.test(sanitizeZipInput(value));
+}
+
+function getPlayerTriviaStatusText(currentRound) {
+  if (currentRound.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE) {
+    return "Choose your answer";
+  }
+
+  if (currentRound.status === TRIVIA_ROUND_STATUS_LOCKED) {
+    return "Answers are locked";
+  }
+
+  if (currentRound.status === TRIVIA_ROUND_STATUS_REVEALED) {
+    return "Results are in";
+  }
+
+  return getTriviaRoundStatusLabel(currentRound.status);
+}
+
+function getPlayerBingoStatusLine(currentRound) {
+  if (isBingoRoundOpen(currentRound)) {
+    return "Cards are open. Shuffle while you can.";
+  }
+
+  if (currentRound.status === BINGO_ROUND_STATUS_CARDS_LOCKED) {
+    return "Cards are locked.";
+  }
+
+  if (currentRound.status === BINGO_ROUND_STATUS_IN_PROGRESS) {
+    return "Bingo is live. Watch for bottles being called.";
+  }
+
+  if (currentRound.status === BINGO_ROUND_STATUS_ENDED) {
+    return "Round ended.";
+  }
+
+  return PLAYER_BINGO_WAITING_MESSAGE;
+}
 
 function clearPlayerContentListeners() {
   if (typeof unsubscribePagesListener === "function") {
@@ -180,12 +272,17 @@ function cleanupPlayerPageRuntime() {
     activePlayerRoot.removeEventListener("click", activePlayerClickHandler);
   }
 
+  if (activePlayerRoot && activePlayerInputHandler) {
+    activePlayerRoot.removeEventListener("input", activePlayerInputHandler);
+  }
+
   if (activePlayerRoot && activePlayerSubmitHandler) {
     activePlayerRoot.removeEventListener("submit", activePlayerSubmitHandler);
   }
 
   activePlayerRoot = null;
   activePlayerClickHandler = null;
+  activePlayerInputHandler = null;
   activePlayerSubmitHandler = null;
 }
 
@@ -211,6 +308,16 @@ function normalizePlayerRecord(playerRecord, fallbackValues) {
 
 function getHubPanel(panelId) {
   return HUB_PANELS.find((panel) => panel.id === panelId) || HUB_PANELS[0];
+}
+
+function getVisibleHubPanels() {
+  return VISIBLE_HUB_PANEL_IDS
+    .map((panelId) => HUB_PANELS.find((panel) => panel.id === panelId))
+    .filter(Boolean);
+}
+
+function getHubPanelLabel(panel) {
+  return HUB_PANEL_LABEL_OVERRIDES[panel?.id] || panel?.label || "";
 }
 
 function isStaticPagePanel(panel) {
@@ -253,11 +360,12 @@ function renderPlayerMessage(playerMessage) {
   `;
 }
 
-function renderAgeGate() {
+function renderAgeGate(eventName) {
   return `
-    <section class="player-section">
-      <p class="eyebrow">Player Check-In</p>
-      <h2>Age Gate</h2>
+    <section class="player-section player-entry-section">
+      <p class="eyebrow">${PLAYER_BRAND_EYEBROW}</p>
+      <h2>${escapeHtml(eventName)}</h2>
+      <p class="player-kicker">Guest Check-In</p>
       <p class="player-copy">Please confirm that you are 21 or older before continuing to event check-in.</p>
       <div class="player-action-stack">
         <button type="button" class="primary-button" data-action="accept-age-gate">I Am 21+</button>
@@ -267,28 +375,30 @@ function renderAgeGate() {
   `;
 }
 
-function renderAgeGateBlocked() {
+function renderAgeGateBlocked(eventName) {
   return `
-    <section class="player-section">
-      <p class="eyebrow">Player Check-In</p>
-      <h2>Thanks for checking</h2>
+    <section class="player-section player-entry-section">
+      <p class="eyebrow">${PLAYER_BRAND_EYEBROW}</p>
+      <h2>${escapeHtml(eventName)}</h2>
+      <p class="player-kicker">Guest Check-In</p>
+      <h3>Thanks for checking</h3>
       <p class="player-copy">This event experience is only available to guests who are 21 or older. Please see event staff if you have questions.</p>
       <button type="button" class="secondary-button" data-action="reset-age-gate">Go Back</button>
     </section>
   `;
 }
 
-function renderCheckInForm({ canSave, isEditing }) {
-  const heading = isEditing ? "Edit Check-In" : "Check In";
+function renderCheckInForm({ canSave, isEditing, eventName }) {
+  const heading = isEditing ? "Edit Check-In" : "Guest Check-In";
   const submitLabel = isEditing ? "Save Changes" : "Check In";
   const helperCopy = isEditing
-    ? "Update your details below. Saving will update the same Firebase player record."
-    : "Enter your details to save your check-in and enter the Event Hub.";
+    ? "Update your details below and save when you're ready."
+    : "Enter your details to save your check-in and open the Event Hub.";
   const connectionMessage = canSave
     ? ""
     : `
       <div class="player-note" data-tone="warning">
-        Check-in needs a live Firebase connection before it can save.
+        Check-in will be available as soon as the event connection is live.
       </div>
     `;
   const cancelAction = isEditing
@@ -296,9 +406,10 @@ function renderCheckInForm({ canSave, isEditing }) {
     : "";
 
   return `
-    <section class="player-section">
-      <p class="eyebrow">Player Check-In</p>
-      <h2>${heading}</h2>
+    <section class="player-section player-entry-section">
+      <p class="eyebrow">${PLAYER_BRAND_EYEBROW}</p>
+      <h2>${escapeHtml(eventName)}</h2>
+      <p class="player-kicker">${heading}</p>
       <p class="player-copy">${helperCopy}</p>
       ${connectionMessage}
       <form id="player-checkin-form" class="player-form" novalidate>
@@ -308,7 +419,7 @@ function renderCheckInForm({ canSave, isEditing }) {
         </label>
         <label class="form-field" for="player-zip">
           <span>ZIP Code</span>
-          <input id="player-zip" name="zip" class="form-input" type="text" inputmode="numeric" autocomplete="postal-code" required>
+          <input id="player-zip" name="zip" class="form-input" type="text" inputmode="numeric" maxlength="5" pattern="[0-9]{5}" autocomplete="postal-code" required>
         </label>
         <label class="form-field" for="player-email">
           <span>Email <small>(Optional)</small></span>
@@ -323,26 +434,38 @@ function renderCheckInForm({ canSave, isEditing }) {
   `;
 }
 
-function renderHubSummary(activePanel) {
+function renderPlayerDetailHeader({
+  eventName,
+  title = "",
+  titleDataAttribute = "",
+  helperCopy = "",
+}) {
+  const titleAttributes = titleDataAttribute ? ` ${titleDataAttribute}` : "";
+  const titleContent = title ? escapeHtml(title) : "";
+  const helperMarkup = helperCopy
+    ? `<p class="player-copy">${escapeHtml(helperCopy)}</p>`
+    : "";
+
   return `
-    <section class="hub-panel" aria-live="polite">
-      <h3>${escapeHtml(activePanel.title)}</h3>
-      <p>${escapeHtml(activePanel.message)}</p>
-    </section>
+    <div class="player-detail-header">
+      <div class="player-detail-header__top">
+        <p class="eyebrow">${escapeHtml(eventName)}</p>
+        <button type="button" class="text-link-button player-detail-back-link" data-action="back-to-hub">&larr; Hub</button>
+      </div>
+      <h2${titleAttributes}>${titleContent}</h2>
+      ${helperMarkup}
+    </div>
   `;
 }
 
-function renderTriviaDetail() {
+function renderTriviaDetail(eventName) {
   return `
     <section class="player-section">
-      <div class="player-section-header">
-        <div>
-          <p class="eyebrow">Event Hub</p>
-          <h2>Trivia</h2>
-          <p class="player-copy">Watch for the live question, answer while it is open, and check the reveal when the Host finishes the round.</p>
-        </div>
-        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
-      </div>
+      ${renderPlayerDetailHeader({
+        eventName,
+        title: "Trivia",
+        helperCopy: "Choose your answer while live.",
+      })}
       <div class="trivia-live-detail">
         <div data-player-trivia-status></div>
         <div data-player-trivia-panel></div>
@@ -351,17 +474,14 @@ function renderTriviaDetail() {
   `;
 }
 
-function renderBingoDetail() {
+function renderBingoDetail(eventName) {
   return `
     <section class="player-section">
-      <div class="player-section-header">
-        <div>
-          <p class="eyebrow">Event Hub</p>
-          <h2>Bingo</h2>
-          <p class="player-copy">View the current shared Bingo round, keep your saved 3x3 card for this round, and shuffle while cards stay open.</p>
-        </div>
-        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
-      </div>
+      ${renderPlayerDetailHeader({
+        eventName,
+        title: "Bingo",
+        helperCopy: "Tip: you can shuffle cards until cards are locked.",
+      })}
       <div class="bingo-live-detail">
         <div data-player-bingo-status></div>
         <div data-player-bingo-panel></div>
@@ -370,16 +490,13 @@ function renderBingoDetail() {
   `;
 }
 
-function renderStaticPageDetail() {
+function renderStaticPageDetail(eventName) {
   return `
     <section class="player-section">
-      <div class="player-section-header">
-        <div>
-          <p class="eyebrow">Event Hub</p>
-          <h2 data-static-page-title></h2>
-        </div>
-        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
-      </div>
+      ${renderPlayerDetailHeader({
+        eventName,
+        titleDataAttribute: "data-static-page-title",
+      })}
       <div class="hub-panel static-page-panel">
         <p class="static-page-content" data-static-page-content></p>
       </div>
@@ -387,33 +504,27 @@ function renderStaticPageDetail() {
   `;
 }
 
-function renderReviewDetail() {
+function renderReviewDetail(eventName) {
   return `
     <section class="player-section">
-      <div class="player-section-header">
-        <div>
-          <p class="eyebrow">Event Hub</p>
-          <h2>Leave Review</h2>
-          <p class="player-copy">Choose the review destination you want to use. Unavailable links stay disabled until Admin posts them.</p>
-        </div>
-        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
-      </div>
+      ${renderPlayerDetailHeader({
+        eventName,
+        title: "Leave Review",
+        helperCopy: "Choose a review option below.",
+      })}
       <div class="review-links-grid" data-review-actions></div>
     </section>
   `;
 }
 
-function renderBottleListDetail() {
+function renderBottleListDetail(eventName) {
   return `
     <section class="player-section">
-      <div class="player-section-header">
-        <div>
-          <p class="eyebrow">Event Hub</p>
-          <h2 data-bottle-list-title></h2>
-          <p class="player-copy">Public raffle or event bottle list only. This page remains separate from Bingo.</p>
-        </div>
-        <button type="button" class="text-link-button" data-action="back-to-hub">Back to Event Hub</button>
-      </div>
+      ${renderPlayerDetailHeader({
+        eventName,
+        titleDataAttribute: "data-bottle-list-title",
+        helperCopy: "Browse the current bottle list for this event.",
+      })}
       <div class="bottle-list-detail">
         <div data-bottle-list-status></div>
         <div class="bottle-list-group-grid" data-bottle-list-groups></div>
@@ -547,54 +658,58 @@ function renderHub(playerState, playerUiState) {
   const currentState = playerState.getState();
   const currentPlayer = currentState.currentPlayer;
   const activePanel = getHubPanel(currentState.activeHubPanel);
-  const hubButtonsMarkup = HUB_PANELS
+  const eventName = getPlayerEventTitle(currentState.eventConfig);
+  const hubButtonsMarkup = getVisibleHubPanels()
     .map((panel) => `
       <button
         type="button"
         class="hub-button"
         data-action="open-hub-panel"
         data-panel-id="${panel.id}"
+        data-hub-span="${panel.id === "leave-review" ? "full" : "half"}"
         aria-pressed="${panel.id === activePanel.id ? "true" : "false"}"
       >
-        ${panel.label}
+        <span class="hub-button__title">${escapeHtml(getHubPanelLabel(panel))}</span>
       </button>
     `)
     .join("");
 
   if (playerUiState.isViewingHubDetail && isTriviaPanel(activePanel)) {
-    return renderTriviaDetail();
+    return renderTriviaDetail(eventName);
   }
 
   if (playerUiState.isViewingHubDetail && isBingoPanel(activePanel)) {
-    return renderBingoDetail();
+    return renderBingoDetail(eventName);
   }
 
   if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
-    return renderStaticPageDetail();
+    return renderStaticPageDetail(eventName);
   }
 
   if (playerUiState.isViewingHubDetail && isReviewLinksPanel(activePanel)) {
-    return renderReviewDetail();
+    return renderReviewDetail(eventName);
   }
 
   if (playerUiState.isViewingHubDetail && isBottleListPanel(activePanel)) {
-    return renderBottleListDetail();
+    return renderBottleListDetail(eventName);
   }
 
   return `
     <section class="player-section">
-      <div class="player-section-header">
-        <div>
+      <div class="player-detail-header player-hub-header">
+        <div class="player-detail-header__top">
           <p class="eyebrow">Event Hub</p>
-          <h2 data-player-welcome>Welcome, ${escapeHtml(getPreferredName(currentPlayer?.name))}.</h2>
+          <button type="button" class="text-link-button player-detail-back-link" data-action="edit-check-in">Edit Check-In</button>
         </div>
-        <button type="button" class="text-link-button" data-action="edit-check-in">Edit Check-In</button>
+        <h2>${escapeHtml(eventName)}</h2>
+        <p class="player-checkin-summary" data-player-welcome>${escapeHtml(getPlayerCheckInSummary(currentPlayer))}</p>
       </div>
-      <p class="player-copy">Choose a section below. Live Trivia is ready here, while additional event features will continue to expand in later slices.</p>
-      <div class="hub-grid">
+      <div class="hub-panel player-hub-welcome">
+        <p>${escapeHtml(getPlayerHubWelcomeMessage(eventName))}</p>
+      </div>
+      <div class="hub-grid player-hub-grid">
         ${hubButtonsMarkup}
       </div>
-      ${renderHubSummary(activePanel)}
     </section>
   `;
 }
@@ -634,33 +749,13 @@ function renderReviewActions(reviewActionsNode, reviewLinks) {
       unavailableButton.type = "button";
       unavailableButton.className = "secondary-button";
       unavailableButton.disabled = true;
-      unavailableButton.textContent = `${linkDefinition.label} Unavailable`;
-      reviewLinkDescription.textContent = "This review link has not been posted yet.";
+      unavailableButton.textContent = `${linkDefinition.label} Coming Soon`;
+      reviewLinkDescription.textContent = "This review option is not available yet.";
       reviewLinkWrapper.append(reviewLinkHeading, unavailableButton, reviewLinkDescription);
     }
 
     reviewActionsNode.append(reviewLinkWrapper);
   });
-}
-
-function createTriviaSummaryRow(label, value) {
-  const summaryNode = document.createElement("p");
-  const labelNode = document.createElement("strong");
-
-  summaryNode.className = "trivia-question-meta";
-  labelNode.textContent = `${label}: `;
-  summaryNode.append(labelNode, document.createTextNode(value));
-  return summaryNode;
-}
-
-function appendTriviaAnswerSummary(containerNode, label, answerIndex, options) {
-  if (!Number.isInteger(answerIndex) || !options[answerIndex]) {
-    return;
-  }
-
-  containerNode.append(
-    createTriviaSummaryRow(label, `Choice ${answerIndex + 1} (${options[answerIndex]})`)
-  );
 }
 
 function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
@@ -670,7 +765,6 @@ function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
   const savedAnswer = isValidTriviaAnswerForRound(playerUiState.triviaAnswer, currentRound)
     ? playerUiState.triviaAnswer
     : null;
-  const hasResolvedCurrentRoundAnswer = playerUiState.hasLoadedTriviaAnswer || !playerUiState.isTriviaAnswerLoading;
 
   if (statusNode) {
     statusNode.innerHTML = "";
@@ -682,20 +776,16 @@ function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
     if (playerUiState.isTriviaRoundLoading && !playerUiState.hasLoadedTriviaRound) {
       statusNode.append(createPlayerNotice("Loading the current Trivia question...", "info"));
     } else if (playerUiState.triviaRoundUnavailableMessage && !playerUiState.hasLoadedTriviaRound) {
-      statusNode.append(createPlayerNotice(playerUiState.triviaRoundUnavailableMessage, "warning"));
+      statusNode.append(createPlayerNotice("Trivia is temporarily unavailable right now.", "warning"));
     } else if (playerUiState.triviaRoundWarning) {
-      statusNode.append(createPlayerNotice(playerUiState.triviaRoundWarning, "warning"));
+      statusNode.append(createPlayerNotice("Trivia is updating. Showing the latest available question.", "warning"));
     }
 
     if (hasActiveTriviaRound(currentRound)) {
       if (playerUiState.triviaAnswerUnavailableMessage && !playerUiState.hasLoadedTriviaAnswer) {
-        statusNode.append(createPlayerNotice(playerUiState.triviaAnswerUnavailableMessage, "warning"));
+        statusNode.append(createPlayerNotice("Your saved answer is temporarily unavailable right now.", "warning"));
       } else if (playerUiState.triviaAnswerWarning) {
-        statusNode.append(createPlayerNotice(playerUiState.triviaAnswerWarning, "warning"));
-      }
-
-      if (playerUiState.isSavingTriviaAnswer) {
-        statusNode.append(createPlayerNotice("Saving your Trivia answer...", "info"));
+        statusNode.append(createPlayerNotice("Showing your latest saved answer.", "warning"));
       }
     }
   }
@@ -708,12 +798,14 @@ function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
 
   if (!hasActiveTriviaRound(currentRound)) {
     const waitingPanelNode = document.createElement("section");
-    const waitingCopyNode = document.createElement("p");
+    const waitingEyebrowNode = document.createElement("p");
+    const waitingTitleNode = document.createElement("h3");
 
     waitingPanelNode.className = "hub-panel trivia-player-panel";
-    waitingCopyNode.className = "player-copy";
-    waitingCopyNode.textContent = PLAYER_TRIVIA_WAITING_MESSAGE;
-    waitingPanelNode.append(waitingCopyNode);
+    waitingEyebrowNode.className = "eyebrow";
+    waitingEyebrowNode.textContent = "Trivia";
+    waitingTitleNode.textContent = "Waiting for the next question";
+    waitingPanelNode.append(waitingEyebrowNode, waitingTitleNode);
     panelNode.append(waitingPanelNode);
     return;
   }
@@ -725,33 +817,21 @@ function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
   const titleNode = document.createElement("h3");
   const statusBadgeNode = document.createElement("span");
   const questionNode = document.createElement("p");
-  const helperCopyNode = document.createElement("p");
   const optionsGridNode = document.createElement("div");
 
   triviaPanelNode.className = "trivia-player-panel";
   headerNode.className = "trivia-status-row";
   eyebrowNode.className = "eyebrow";
   eyebrowNode.textContent = "Live Trivia";
-  titleNode.textContent = currentRound.questionId || "Current Question";
+  titleNode.textContent = "Current Question";
   statusBadgeNode.className = "trivia-status-badge";
   statusBadgeNode.dataset.triviaStatus = currentRound.status;
-  statusBadgeNode.textContent = getTriviaRoundStatusLabel(currentRound.status);
+  statusBadgeNode.textContent = getPlayerTriviaStatusText(currentRound);
   titleWrapNode.append(eyebrowNode, titleNode);
   headerNode.append(titleWrapNode, statusBadgeNode);
   questionNode.className = "trivia-question-copy";
   questionNode.textContent = currentRound.question;
-  helperCopyNode.className = "player-copy";
   optionsGridNode.className = "trivia-answer-grid";
-
-  if (currentRound.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE) {
-    helperCopyNode.textContent = savedAnswer
-      ? "Your current answer is saved. You can still change it while the question stays live."
-      : "Tap an answer below. You can change it until the Host locks the round.";
-  } else if (currentRound.status === TRIVIA_ROUND_STATUS_LOCKED) {
-    helperCopyNode.textContent = "Answers are locked.";
-  } else {
-    helperCopyNode.textContent = "The correct answer has been revealed.";
-  }
 
   currentRound.options.forEach((optionValue, optionIndex) => {
     const answerButtonNode = document.createElement("button");
@@ -771,79 +851,24 @@ function renderPlayerTriviaDetailContent(playerRoot, playerUiState) {
     answerButtonNode.dataset.correct = isCorrectReveal ? "true" : "false";
     answerButtonNode.dataset.incorrect = isIncorrectReveal ? "true" : "false";
     answerButtonNode.disabled = isDisabled;
-    answerButtonNode.textContent = `Choice ${optionIndex + 1}: ${optionValue}`;
+    answerButtonNode.textContent = `${optionIndex + 1}. ${optionValue}`;
     optionsGridNode.append(answerButtonNode);
   });
 
-  triviaPanelNode.append(headerNode, questionNode, helperCopyNode, optionsGridNode);
-
-  if (playerUiState.isTriviaAnswerLoading && !savedAnswer) {
-    const answerLoadingNode = document.createElement("p");
-
-    answerLoadingNode.className = "player-copy";
-    answerLoadingNode.textContent = "Checking your saved answer for this round...";
-    triviaPanelNode.append(answerLoadingNode);
-  }
-
-  if (currentRound.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE && savedAnswer) {
-    appendTriviaAnswerSummary(triviaPanelNode, "Current answer", savedAnswer.answer, currentRound.options);
-  }
-
-  if (currentRound.status === TRIVIA_ROUND_STATUS_LOCKED) {
-    if (savedAnswer) {
-      appendTriviaAnswerSummary(triviaPanelNode, "Submitted answer", savedAnswer.answer, currentRound.options);
-    } else if (hasResolvedCurrentRoundAnswer) {
-      const missedAnswerNode = document.createElement("p");
-
-      missedAnswerNode.className = "trivia-answer-note";
-      missedAnswerNode.textContent = "No answer was submitted before the round was locked.";
-      triviaPanelNode.append(missedAnswerNode);
-    }
-  }
-
-  if (currentRound.status === TRIVIA_ROUND_STATUS_REVEALED) {
-    appendTriviaAnswerSummary(triviaPanelNode, "Correct answer", currentRound.correctAnswer, currentRound.options);
-
-    if (savedAnswer) {
-      appendTriviaAnswerSummary(triviaPanelNode, "Your answer", savedAnswer.answer, currentRound.options);
-    } else if (hasResolvedCurrentRoundAnswer) {
-      const noAnswerNode = document.createElement("p");
-
-      noAnswerNode.className = "trivia-answer-note";
-      noAnswerNode.textContent = "No answer was submitted before the reveal.";
-      triviaPanelNode.append(noAnswerNode);
-    }
-
-    const resultNode = document.createElement("div");
-
-    resultNode.className = "trivia-result-pill";
-
-    if (!savedAnswer && hasResolvedCurrentRoundAnswer) {
-      resultNode.dataset.tone = "warning";
-      resultNode.textContent = "No answer submitted";
-    } else if (savedAnswer && savedAnswer.answer === currentRound.correctAnswer) {
-      resultNode.dataset.tone = "success";
-      resultNode.textContent = "Correct";
-    } else if (savedAnswer) {
-      resultNode.dataset.tone = "error";
-      resultNode.textContent = "Incorrect";
-    } else {
-      resultNode.dataset.tone = "info";
-      resultNode.textContent = "Checking your saved answer...";
-    }
-
-    triviaPanelNode.append(resultNode);
-  }
+  triviaPanelNode.append(headerNode, questionNode, optionsGridNode);
 
   panelNode.append(triviaPanelNode);
 }
 
-function formatBingoCompletedLines(completedLines) {
-  if (!Array.isArray(completedLines) || completedLines.length === 0) {
-    return "None yet";
-  }
+function getBingoCompletedLineCount(completedLines) {
+  return Array.isArray(completedLines) ? completedLines.length : 0;
+}
 
-  return completedLines.map((lineKey) => getBingoLineLabel(lineKey)).join(", ");
+function formatBingoStatsLine(matchState) {
+  const matchCount = Number.isInteger(matchState?.matchCount) ? matchState.matchCount : 0;
+  const lineCount = getBingoCompletedLineCount(matchState?.completedLines);
+
+  return `Matches: ${matchCount}/${BINGO_CARD_ITEM_COUNT} | Lines: ${lineCount} | Blackout: ${matchState?.isBlackout ? "Yes" : "No"}`;
 }
 
 function renderBingoCardGrid(cardGridNode, bingoCard, matchState = null) {
@@ -858,19 +883,22 @@ function renderBingoCardGrid(cardGridNode, bingoCard, matchState = null) {
 
   bingoCard.items.forEach((itemValue, itemIndex) => {
     const itemNode = document.createElement("article");
-    const positionNode = document.createElement("span");
     const nameNode = document.createElement("strong");
-    const matchLabelNode = document.createElement("span");
     const isMatched = matchedPositionSet.has(itemIndex);
 
     itemNode.className = "bingo-card-tile";
     itemNode.dataset.matched = isMatched ? "true" : "false";
-    positionNode.className = "bingo-card-position";
-    positionNode.textContent = `Tile ${itemIndex + 1}`;
     nameNode.textContent = itemValue.name;
-    matchLabelNode.className = "bingo-card-match";
-    matchLabelNode.textContent = isMatched ? "Matched" : "Not drawn";
-    itemNode.append(positionNode, nameNode, matchLabelNode);
+    itemNode.append(nameNode);
+
+    if (isMatched) {
+      const matchLabelNode = document.createElement("span");
+
+      matchLabelNode.className = "bingo-card-match";
+      matchLabelNode.textContent = "Matched";
+      itemNode.append(matchLabelNode);
+    }
+
     cardGridNode.append(itemNode);
   });
 }
@@ -899,22 +927,22 @@ function renderPlayerBingoDetailContent(playerRoot, playerUiState) {
     if (playerUiState.isBingoRoundLoading && !playerUiState.hasLoadedBingoRound) {
       statusNode.append(createPlayerNotice("Loading the current Bingo round...", "info"));
     } else if (playerUiState.bingoRoundUnavailableMessage && !playerUiState.hasLoadedBingoRound) {
-      statusNode.append(createPlayerNotice(playerUiState.bingoRoundUnavailableMessage, "warning"));
+      statusNode.append(createPlayerNotice("Bingo is temporarily unavailable right now.", "warning"));
     } else if (playerUiState.bingoRoundWarning) {
-      statusNode.append(createPlayerNotice(playerUiState.bingoRoundWarning, "warning"));
+      statusNode.append(createPlayerNotice("Bingo is updating. Showing the latest available round.", "warning"));
     }
 
     if (hasPreparedBingoRound(currentRound)) {
       if (playerUiState.bingoCardUnavailableMessage && !playerUiState.hasLoadedBingoCard) {
-        statusNode.append(createPlayerNotice(playerUiState.bingoCardUnavailableMessage, "warning"));
+        statusNode.append(createPlayerNotice("Your Bingo card is temporarily unavailable right now.", "warning"));
       } else if (playerUiState.bingoCardWarning) {
-        statusNode.append(createPlayerNotice(playerUiState.bingoCardWarning, "warning"));
+        statusNode.append(createPlayerNotice("Showing your latest saved Bingo card.", "warning"));
       }
 
       if (playerUiState.bingoDrawsUnavailableMessage && !playerUiState.hasLoadedBingoDraws) {
-        statusNode.append(createPlayerNotice(playerUiState.bingoDrawsUnavailableMessage, "warning"));
+        statusNode.append(createPlayerNotice("Recent Bingo draws are temporarily unavailable right now.", "warning"));
       } else if (playerUiState.bingoDrawsWarning) {
-        statusNode.append(createPlayerNotice(playerUiState.bingoDrawsWarning, "warning"));
+        statusNode.append(createPlayerNotice("Showing the latest available Bingo draws.", "warning"));
       }
 
       if (playerUiState.isSavingBingoCard) {
@@ -922,11 +950,11 @@ function renderPlayerBingoDetailContent(playerRoot, playerUiState) {
       }
 
       if (playerUiState.isBingoDrawsLoading && !playerUiState.hasLoadedBingoDraws) {
-        statusNode.append(createPlayerNotice("Loading the current Bingo draws...", "info"));
+        statusNode.append(createPlayerNotice("Loading recent Bingo draws...", "info"));
       }
 
       if (drawState.errors.length > 0) {
-        statusNode.append(createPlayerNotice("Some invalid Bingo draw records were ignored while rebuilding your view.", "warning"));
+        statusNode.append(createPlayerNotice("Recent Bingo draws are refreshing.", "warning"));
       }
     }
   }
@@ -939,160 +967,91 @@ function renderPlayerBingoDetailContent(playerRoot, playerUiState) {
 
   if (!hasPreparedBingoRound(currentRound)) {
     const waitingPanelNode = document.createElement("section");
-    const waitingCopyNode = document.createElement("p");
+    const waitingCardNode = document.createElement("div");
+    const waitingStatusNode = document.createElement("p");
 
-    waitingPanelNode.className = "hub-panel trivia-player-panel";
-    waitingCopyNode.className = "player-copy";
-    waitingCopyNode.textContent = PLAYER_BINGO_WAITING_MESSAGE;
-    waitingPanelNode.append(waitingCopyNode);
+    waitingPanelNode.className = "bingo-player-panel";
+    waitingCardNode.className = "hub-panel bingo-player-card bingo-player-card--waiting";
+    waitingStatusNode.className = "bingo-round-status";
+    waitingStatusNode.textContent = PLAYER_BINGO_WAITING_MESSAGE;
+    waitingCardNode.append(waitingStatusNode);
+    waitingPanelNode.append(waitingCardNode);
     panelNode.append(waitingPanelNode);
     return;
   }
 
   const bingoPanelNode = document.createElement("section");
-  const headerNode = document.createElement("div");
-  const titleWrapNode = document.createElement("div");
-  const eyebrowNode = document.createElement("p");
-  const titleNode = document.createElement("h3");
-  const statusBadgeNode = document.createElement("span");
-  const helperCopyNode = document.createElement("p");
-  const recentDrawsNode = document.createElement("div");
+  const bingoCardWrapNode = document.createElement("div");
+  const roundStatusNode = document.createElement("p");
+  const cardGridNode = document.createElement("div");
 
-  bingoPanelNode.className = "trivia-player-panel bingo-player-panel";
-  headerNode.className = "trivia-status-row";
-  eyebrowNode.className = "eyebrow";
-  eyebrowNode.textContent = "Live Bingo";
-  titleNode.textContent = currentRound.roundId || "Current Bingo Round";
-  statusBadgeNode.className = "trivia-status-badge";
-  statusBadgeNode.dataset.bingoStatus = currentRound.status;
-  statusBadgeNode.textContent = getBingoRoundStatusLabel(currentRound.status);
-  titleWrapNode.append(eyebrowNode, titleNode);
-  headerNode.append(titleWrapNode, statusBadgeNode);
-  helperCopyNode.className = "player-copy";
-  recentDrawsNode.className = "bingo-recent-draws";
-  bingoPanelNode.append(headerNode);
+  bingoPanelNode.className = "bingo-player-panel";
+  bingoCardWrapNode.className = "hub-panel bingo-player-card";
+  roundStatusNode.className = "bingo-round-status";
+  roundStatusNode.textContent = getPlayerBingoStatusLine(currentRound);
+  cardGridNode.className = "bingo-card-grid";
+  bingoCardWrapNode.append(roundStatusNode);
 
   if (currentRound.activePool.length < BINGO_CARD_ITEM_COUNT) {
-    helperCopyNode.textContent = `This Bingo round is unavailable because the shared active pool has fewer than ${BINGO_CARD_ITEM_COUNT} valid items.`;
-    bingoPanelNode.append(helperCopyNode);
+    roundStatusNode.textContent = PLAYER_BINGO_WAITING_MESSAGE;
+    bingoPanelNode.append(bingoCardWrapNode);
     panelNode.append(bingoPanelNode);
     return;
   }
 
-  if (isBingoRoundOpen(currentRound)) {
-    helperCopyNode.textContent = savedCard
-      ? "Your saved Bingo card is shown below. You can shuffle it while cards stay open."
-      : "Checking for your saved Bingo card for this round.";
-  } else if (currentRound.status === BINGO_ROUND_STATUS_CARDS_LOCKED) {
-    helperCopyNode.textContent = savedCard
-      ? "Cards are locked. Waiting for the Bingo round to begin."
-      : "Cards are locked and no card was created for this round.";
-  } else if (currentRound.status === BINGO_ROUND_STATUS_IN_PROGRESS) {
-    helperCopyNode.textContent = savedCard
-      ? "Drawn items are marked automatically as the Host runs the round."
-      : "Cards are locked and no card was created for this round.";
-  } else if (currentRound.status === BINGO_ROUND_STATUS_ENDED) {
-    helperCopyNode.textContent = savedCard
-      ? "This Bingo round has ended."
-      : "This Bingo round has ended and no saved card is available for this round.";
-  } else {
-    helperCopyNode.textContent = savedCard
-      ? "This Bingo round is no longer accepting card changes. Your last saved card is shown below."
-      : "This Bingo round is no longer accepting new cards.";
-  }
-
-  bingoPanelNode.append(helperCopyNode);
-
-  const metaGridNode = document.createElement("div");
-  const cardGridNode = document.createElement("div");
-
-  metaGridNode.className = "bingo-card-meta";
-  cardGridNode.className = "bingo-card-grid";
-
   if (!savedCard) {
     const loadingCopyNode = document.createElement("p");
 
-    loadingCopyNode.className = "player-copy";
+    loadingCopyNode.className = "player-copy bingo-card-loading";
 
     if (playerUiState.isSavingBingoCard) {
-      loadingCopyNode.textContent = "Saving your Bingo card to Firebase...";
+      loadingCopyNode.textContent = "Saving your Bingo card...";
     } else if (playerUiState.isBingoCardLoading) {
-      loadingCopyNode.textContent = "Checking your saved Bingo card for this round...";
+      loadingCopyNode.textContent = "Getting your Bingo card ready...";
     } else if (isBingoRoundOpen(currentRound)) {
-      loadingCopyNode.textContent = "Your card will appear after it has been saved for this round.";
+      loadingCopyNode.textContent = "Your Bingo card will appear in a moment.";
     } else {
-      loadingCopyNode.textContent = "No saved Bingo card is available for this round.";
+      loadingCopyNode.textContent = "Your Bingo card is not available for this round.";
     }
 
-    bingoPanelNode.append(loadingCopyNode);
+    bingoCardWrapNode.append(loadingCopyNode);
   } else {
-    metaGridNode.append(
-      createTriviaSummaryRow("Saved", new Date(savedCard.createdAt).toLocaleString()),
-      createTriviaSummaryRow("Updated", new Date(savedCard.updatedAt).toLocaleString()),
-      createTriviaSummaryRow("Shuffles", String(savedCard.shuffleCount)),
-      createTriviaSummaryRow("Match Count", `${matchState.matchCount}/${BINGO_CARD_ITEM_COUNT}`),
-      createTriviaSummaryRow("Completed Lines", formatBingoCompletedLines(matchState.completedLines))
-    );
-    renderBingoCardGrid(cardGridNode, savedCard, matchState);
-    bingoPanelNode.append(metaGridNode, cardGridNode);
+    const statsNode = document.createElement("p");
+
+    statsNode.className = "bingo-stats-line";
+    statsNode.textContent = formatBingoStatsLine(matchState);
+    bingoCardWrapNode.append(statsNode);
 
     if (matchState.isLineWinner) {
       const lineWinnerNode = document.createElement("div");
 
-      lineWinnerNode.className = "trivia-result-pill";
+      lineWinnerNode.className = "trivia-result-pill bingo-win-pill";
       lineWinnerNode.dataset.tone = matchState.isBlackout ? "success" : "info";
       lineWinnerNode.textContent = matchState.isBlackout
         ? "Blackout Winner"
         : "Line Winner";
-      bingoPanelNode.append(lineWinnerNode);
+      bingoCardWrapNode.append(lineWinnerNode);
     }
+
+    renderBingoCardGrid(cardGridNode, savedCard, matchState);
+    bingoCardWrapNode.append(cardGridNode);
 
     if (isBingoRoundOpen(currentRound)) {
       const actionsNode = document.createElement("div");
       const shuffleButtonNode = document.createElement("button");
 
-      actionsNode.className = "player-form-actions";
+      actionsNode.className = "player-form-actions player-form-actions--bingo";
       shuffleButtonNode.type = "button";
       shuffleButtonNode.className = "primary-button";
       shuffleButtonNode.dataset.action = "shuffle-bingo-card";
       shuffleButtonNode.disabled = playerUiState.isSavingBingoCard;
       shuffleButtonNode.textContent = playerUiState.isSavingBingoCard ? "Saving Bingo Card..." : "Shuffle Card";
       actionsNode.append(shuffleButtonNode);
-      bingoPanelNode.append(actionsNode);
+      bingoCardWrapNode.append(actionsNode);
     }
   }
 
-  if (drawState.lastDraw) {
-    const lastDrawPanelNode = document.createElement("section");
-
-    lastDrawPanelNode.className = "hub-panel";
-    lastDrawPanelNode.append(
-      createTriviaSummaryRow("Current Draw", `${drawState.lastDraw.sequence}. ${drawState.lastDraw.name}`),
-      createTriviaSummaryRow("Draw Method", drawState.lastDraw.method),
-      createTriviaSummaryRow("Draw Time", new Date(drawState.lastDraw.drawnAt).toLocaleString())
-    );
-    bingoPanelNode.append(lastDrawPanelNode);
-  }
-
-  if (drawState.orderedDraws.length > 0) {
-    const recentDrawsHeadingNode = document.createElement("h4");
-
-    recentDrawsHeadingNode.textContent = "Recent Draws";
-    recentDrawsNode.append(recentDrawsHeadingNode);
-
-    drawState.orderedDraws
-      .slice()
-      .sort((leftDraw, rightDraw) => rightDraw.sequence - leftDraw.sequence)
-      .slice(0, 8)
-      .forEach((drawRecord) => {
-        recentDrawsNode.append(
-          createTriviaSummaryRow(`${drawRecord.sequence}`, drawRecord.name)
-        );
-      });
-
-    bingoPanelNode.append(recentDrawsNode);
-  }
-
+  bingoPanelNode.append(bingoCardWrapNode);
   panelNode.append(bingoPanelNode);
 }
 
@@ -1113,7 +1072,7 @@ function populateDynamicHubContent({ playerRoot, state, playerUiState }) {
     }
 
     if (zipField instanceof HTMLInputElement) {
-      zipField.value = playerRecord.zip || "";
+      zipField.value = sanitizeZipInput(playerRecord.zip || "");
     }
 
     if (emailField instanceof HTMLInputElement) {
@@ -1362,9 +1321,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isTriviaAnswerLoading = false;
 
           if (playerUiState.hasLoadedTriviaAnswer) {
-            playerUiState.triviaAnswerWarning = "Your saved Trivia answer is temporarily unavailable. Showing the last loaded answer.";
+            playerUiState.triviaAnswerWarning = "Showing your latest saved answer.";
           } else {
-            playerUiState.triviaAnswerUnavailableMessage = "Your saved Trivia answer is temporarily unavailable right now.";
+            playerUiState.triviaAnswerUnavailableMessage = "Your saved answer is temporarily unavailable right now.";
           }
 
           renderPlayerView();
@@ -1380,9 +1339,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isTriviaAnswerLoading = false;
 
           if (playerUiState.hasLoadedTriviaAnswer) {
-            playerUiState.triviaAnswerWarning = "Your saved Trivia answer is invalid. Showing the last loaded answer.";
+            playerUiState.triviaAnswerWarning = "Showing your latest saved answer.";
           } else {
-            playerUiState.triviaAnswerUnavailableMessage = "Your saved Trivia answer data is invalid right now.";
+            playerUiState.triviaAnswerUnavailableMessage = "Your saved answer is temporarily unavailable right now.";
           }
 
           renderPlayerView();
@@ -1447,7 +1406,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     if (latestRound.activePool.length < BINGO_CARD_ITEM_COUNT) {
       playerUiState.isSavingBingoCard = false;
       playerUiState.isBingoCardLoading = false;
-      setBingoActionMessage(`This Bingo round cannot create cards because the shared pool has fewer than ${BINGO_CARD_ITEM_COUNT} valid items.`, "warning");
+      setBingoActionMessage("This Bingo round is not ready for cards yet.", "warning");
       renderPlayerView();
       return null;
     }
@@ -1466,7 +1425,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
 
     if (!isBingoRoundOpen(normalizedRound) || normalizedRound.activePool.length < BINGO_CARD_ITEM_COUNT) {
       playerUiState.isBingoCardLoading = false;
-      playerUiState.bingoCardUnavailableMessage = `This Bingo round cannot create a card because the shared pool has fewer than ${BINGO_CARD_ITEM_COUNT} valid items.`;
+      playerUiState.bingoCardUnavailableMessage = "This Bingo round is not ready for cards yet.";
       renderPlayerView();
       return;
     }
@@ -1566,9 +1525,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isBingoCardLoading = false;
 
           if (playerUiState.hasLoadedBingoCard) {
-            playerUiState.bingoCardWarning = "Your saved Bingo card is temporarily unavailable. Showing the last loaded card.";
+            playerUiState.bingoCardWarning = "Showing your latest saved Bingo card.";
           } else {
-            playerUiState.bingoCardUnavailableMessage = "Your saved Bingo card is temporarily unavailable right now.";
+            playerUiState.bingoCardUnavailableMessage = "Your Bingo card is temporarily unavailable right now.";
           }
 
           renderPlayerView();
@@ -1601,9 +1560,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isBingoCardLoading = false;
 
           if (playerUiState.hasLoadedBingoCard) {
-            playerUiState.bingoCardWarning = "Your saved Bingo card is invalid. Showing the last loaded card.";
+            playerUiState.bingoCardWarning = "Showing your latest saved Bingo card.";
           } else {
-            playerUiState.bingoCardUnavailableMessage = "Your saved Bingo card data is invalid right now.";
+            playerUiState.bingoCardUnavailableMessage = "Your Bingo card is temporarily unavailable right now.";
           }
 
           renderPlayerView();
@@ -1649,9 +1608,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isBingoDrawsLoading = false;
 
           if (playerUiState.hasLoadedBingoDraws) {
-            playerUiState.bingoDrawsWarning = "Current Bingo draws are temporarily unavailable. Showing the last loaded draws.";
+            playerUiState.bingoDrawsWarning = "Showing the latest available Bingo draws.";
           } else {
-            playerUiState.bingoDrawsUnavailableMessage = "Current Bingo draws are temporarily unavailable right now.";
+            playerUiState.bingoDrawsUnavailableMessage = "Recent Bingo draws are temporarily unavailable right now.";
           }
 
           renderPlayerView();
@@ -1683,9 +1642,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isBingoRoundLoading = false;
 
           if (playerUiState.hasLoadedBingoRound) {
-            playerUiState.bingoRoundWarning = "Live Bingo updates are temporarily unavailable. Showing the last loaded round state.";
+            playerUiState.bingoRoundWarning = "Showing the latest available Bingo round.";
           } else {
-            playerUiState.bingoRoundUnavailableMessage = "Live Bingo is temporarily unavailable right now.";
+            playerUiState.bingoRoundUnavailableMessage = "Bingo is temporarily unavailable right now.";
             playerUiState.bingoRound = createEmptyBingoCurrentRound();
             detachPlayerBingoDetailListeners({ clearState: true, resetGuard: true });
           }
@@ -1700,9 +1659,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isBingoRoundLoading = false;
 
           if (playerUiState.hasLoadedBingoRound) {
-            playerUiState.bingoRoundWarning = "The current Bingo round data is invalid. Showing the last loaded round.";
+            playerUiState.bingoRoundWarning = "Showing the latest available Bingo round.";
           } else {
-            playerUiState.bingoRoundUnavailableMessage = "The current Bingo round data is invalid right now.";
+            playerUiState.bingoRoundUnavailableMessage = "Bingo is temporarily unavailable right now.";
             playerUiState.bingoRound = createEmptyBingoCurrentRound();
             detachPlayerBingoDetailListeners({ clearState: true, resetGuard: true });
           }
@@ -1734,6 +1693,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   function renderPlayerView() {
     const currentState = state.getState();
     const currentPlayer = currentState.currentPlayer;
+    const eventName = getPlayerEventTitle(currentState.eventConfig);
     let viewMarkup = "";
 
     if (currentPlayer && !playerUiState.isEditingCheckIn) {
@@ -1742,11 +1702,12 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       viewMarkup = renderCheckInForm({
         canSave: firebase.getStatus().isConnected && !playerUiState.isSubmitting,
         isEditing: playerUiState.isEditingCheckIn,
+        eventName,
       });
     } else if (playerUiState.ageGateDeclined) {
-      viewMarkup = renderAgeGateBlocked();
+      viewMarkup = renderAgeGateBlocked(eventName);
     } else {
-      viewMarkup = renderAgeGate();
+      viewMarkup = renderAgeGate(eventName);
     }
 
     playerRoot.innerHTML = `
@@ -1785,7 +1746,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
         playerUiState.isBottleListLoading = false;
 
         if (playerUiState.hasLoadedBottleList) {
-          playerUiState.bottleListWarning = "Live bottle list updates are temporarily unavailable. Showing the last posted list.";
+          playerUiState.bottleListWarning = "Showing the latest posted bottle list.";
         } else {
           playerUiState.bottleListUnavailableMessage = "The bottle list is temporarily unavailable right now. Please try again in a moment.";
         }
@@ -1818,9 +1779,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isTriviaRoundLoading = false;
 
           if (playerUiState.hasLoadedTriviaRound) {
-            playerUiState.triviaRoundWarning = "Live Trivia updates are temporarily unavailable. Showing the last loaded question state.";
+            playerUiState.triviaRoundWarning = "Showing the latest available Trivia question.";
           } else {
-            playerUiState.triviaRoundUnavailableMessage = "Live Trivia is temporarily unavailable right now.";
+            playerUiState.triviaRoundUnavailableMessage = "Trivia is temporarily unavailable right now.";
             playerUiState.triviaRound = normalizeTriviaCurrentRound(null);
             detachPlayerTriviaAnswerListener({ clearState: true });
           }
@@ -1835,9 +1796,9 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
           playerUiState.isTriviaRoundLoading = false;
 
           if (playerUiState.hasLoadedTriviaRound) {
-            playerUiState.triviaRoundWarning = "The current Trivia round data is invalid. Showing the last loaded round.";
+            playerUiState.triviaRoundWarning = "Showing the latest available Trivia question.";
           } else {
-            playerUiState.triviaRoundUnavailableMessage = "The current Trivia round data is invalid right now.";
+            playerUiState.triviaRoundUnavailableMessage = "Trivia is temporarily unavailable right now.";
             playerUiState.triviaRound = normalizeTriviaCurrentRound(null);
             detachPlayerTriviaAnswerListener({ clearState: true });
           }
@@ -1888,8 +1849,8 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       return "Please enter your name to check in.";
     }
 
-    if (!zip) {
-      return "Please enter your ZIP code to check in.";
+    if (!isValidZipCode(zip)) {
+      return "Please enter a valid 5-digit ZIP code.";
     }
 
     if (email && !isValidEmail(email)) {
@@ -2009,7 +1970,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     }
 
     if (currentRound.activePool.length < BINGO_CARD_ITEM_COUNT) {
-      setBingoActionMessage(`This Bingo round cannot shuffle cards because the shared pool has fewer than ${BINGO_CARD_ITEM_COUNT} valid items.`, "warning");
+      setBingoActionMessage("This Bingo round is not ready for shuffling yet.", "warning");
       renderPlayerView();
       return;
     }
@@ -2157,6 +2118,20 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     }
   };
 
+  activePlayerInputHandler = (event) => {
+    const inputNode = event.target;
+
+    if (!(inputNode instanceof HTMLInputElement) || inputNode.id !== "player-zip") {
+      return;
+    }
+
+    const sanitizedZip = sanitizeZipInput(inputNode.value);
+
+    if (inputNode.value !== sanitizedZip) {
+      inputNode.value = sanitizedZip;
+    }
+  };
+
   activePlayerSubmitHandler = async (event) => {
     const formNode = event.target;
 
@@ -2174,7 +2149,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
 
     const formData = new FormData(formNode);
     const name = normalizeTextInput(formData.get("name"));
-    const zip = normalizeTextInput(formData.get("zip"));
+    const zip = sanitizeZipInput(formData.get("zip"));
     const email = normalizeEmailInput(formData.get("email"));
     const validationMessage = getCheckInValidationMessage({ name, zip, email });
 
@@ -2220,14 +2195,12 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     playerUiState.ageGateDeclined = false;
     playerUiState.isEditingCheckIn = false;
     playerUiState.isViewingHubDetail = false;
-    setPlayerMessage(
-      currentState.currentPlayer ? "Your check-in details were updated." : "You are checked in and ready for the Event Hub.",
-      "success"
-    );
+    setPlayerMessage();
     renderPlayerView();
   };
 
   playerRoot.addEventListener("click", activePlayerClickHandler);
+  playerRoot.addEventListener("input", activePlayerInputHandler);
   playerRoot.addEventListener("submit", activePlayerSubmitHandler);
   activePlayerRoot = playerRoot;
 
@@ -2253,8 +2226,8 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   ]);
 
   const firebaseMessage = firebase.isConfigured
-    ? "Player check-in and Event Hub content are ready for Firebase-backed attendance and realtime updates."
-    : "Player check-in is loaded, but a live Firebase connection is required before guests can save check-in or receive event content.";
+    ? "Player check-in is ready."
+    : "Player check-in will be available once the event connection is live.";
 
   renderStatus(firebaseMessage, firebase.isConfigured ? "info" : "warning");
 

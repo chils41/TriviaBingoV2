@@ -1442,7 +1442,8 @@ body[data-app="host"] .host-section-heading {
   gap: 4px;
 }
 
-body[data-app="host"] .host-section-heading h3 {
+body[data-app="host"] .host-section-heading h3,
+body[data-app="host"] .host-section-heading h4 {
   margin: 0;
 }
 
@@ -1498,6 +1499,18 @@ body[data-app="host"] .host-toolbar-row {
   gap: 10px;
 }
 
+body[data-app="host"] .host-trivia-top-row,
+body[data-app="host"] .host-trivia-selector-card,
+body[data-app="host"] .host-trivia-live-panel,
+body[data-app="host"] .host-trivia-pool-card,
+body[data-app="host"] .host-trivia-live-section {
+  align-content: start;
+}
+
+body[data-app="host"] .host-trivia-side {
+  gap: 0;
+}
+
 body[data-app="host"] .host-trivia-selector-grid {
   display: grid;
   gap: 10px;
@@ -1526,6 +1539,20 @@ body[data-app="host"] .host-trivia-answer-strip strong {
 body[data-app="host"] .host-random-button-row .secondary-button {
   min-height: 40px;
   padding: 10px 12px;
+}
+
+body[data-app="host"] .host-random-preview-card {
+  min-height: 250px;
+}
+
+body[data-app="host"] .host-random-preview-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: auto;
+}
+
+body[data-app="host"] .host-random-preview-actions .primary-button {
+  width: 100%;
 }
 
 body[data-app="host"] .host-scroll-panel {
@@ -1572,6 +1599,60 @@ body[data-app="host"] .host-trivia-list-item button {
 
 body[data-app="host"] .host-trivia-list-empty {
   margin: 0;
+}
+
+body[data-app="host"] .host-trivia-live-panel {
+  gap: 12px;
+}
+
+body[data-app="host"] .host-trivia-live-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+body[data-app="host"] .host-trivia-live-section + .host-trivia-live-section {
+  padding-top: 12px;
+  border-top: 1px solid rgba(15, 118, 110, 0.12);
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-status-row {
+  align-items: flex-start;
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-question-card,
+body[data-app="host"] .host-trivia-live-panel .trivia-stats-grid {
+  gap: 10px;
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-question-copy {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-options-list {
+  gap: 6px;
+  padding-left: 18px;
+  line-height: 1.45;
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-answer-note {
+  font-size: 0.84rem;
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-stat-card {
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+body[data-app="host"] .host-trivia-live-panel .trivia-stat-card strong {
+  font-size: 1.05rem;
+}
+
+body[data-app="host"] .host-trivia-pool-card .host-question-scroll {
+  max-height: 400px;
 }
 
 body[data-app="host"] .host-latest-draw-panel {
@@ -1700,11 +1781,20 @@ body[data-app="host"] .host-operator-side .trivia-question-copy {
     grid-template-columns: minmax(0, 1.9fr) minmax(180px, 0.8fr);
     align-items: end;
   }
+
+  body[data-app="host"] .host-trivia-top-row {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: start;
+  }
 }
 
 @media (min-width: 1100px) {
   body[data-app="host"] .host-operator-workspace {
     grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);
+  }
+
+  body[data-app="host"] .host-trivia-top-row {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   }
 
   body[data-app="host"] .host-advanced-grid {
@@ -1724,5 +1814,453 @@ body[data-app="host"] .host-operator-side .trivia-question-copy {
   body[data-app="host"] .host-trivia-list-item button {
     grid-column: 1 / -1;
     justify-self: start;
+  }
+}
+
+body[data-app="player"] .app-shell {
+  width: min(100%, 760px);
+  padding: 16px 12px 36px;
+}
+
+body[data-app="player"] .page-header,
+body[data-app="player"] #app-status {
+  display: none;
+}
+
+body[data-app="player"] .player-card {
+  padding: clamp(18px, 4vw, 28px);
+  border-radius: 24px;
+  background: rgba(255, 253, 248, 0.9);
+}
+
+body[data-app="player"] .player-flow,
+body[data-app="player"] .player-section,
+body[data-app="player"] .trivia-live-detail,
+body[data-app="player"] .bingo-live-detail,
+body[data-app="player"] .bottle-list-detail,
+body[data-app="player"] .review-links-grid {
+  gap: 14px;
+}
+
+body[data-app="player"] .player-entry-section,
+body[data-app="player"] .review-link-card,
+body[data-app="player"] .static-page-panel,
+body[data-app="player"] .trivia-player-panel {
+  border-radius: 20px;
+}
+
+body[data-app="player"] .player-kicker,
+body[data-app="player"] .player-checkin-summary {
+  margin: 0;
+  color: var(--accent-strong);
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+body[data-app="player"] .player-hub-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+body[data-app="player"] .player-hub-header {
+  gap: 4px;
+}
+
+body[data-app="player"] .player-hub-welcome {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+body[data-app="player"] .player-hub-welcome p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+body[data-app="player"] .player-hub-grid .hub-button {
+  display: grid;
+  place-items: center;
+  min-height: 78px;
+  padding: 14px 12px;
+  border-radius: 18px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 243, 235, 0.98) 100%);
+}
+
+body[data-app="player"] .player-hub-grid .hub-button__title {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+body[data-app="player"] .player-hub-grid .hub-button__copy {
+  display: none;
+}
+
+body[data-app="player"] .player-hub-grid .hub-button[data-hub-span="full"] {
+  grid-column: 1 / -1;
+}
+
+body[data-app="player"] .trivia-player-panel,
+body[data-app="player"] .review-link-card,
+body[data-app="player"] .static-page-panel {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+body[data-app="player"] .player-detail-header {
+  display: grid;
+  gap: 6px;
+}
+
+body[data-app="player"] .player-detail-header__top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 12px;
+}
+
+body[data-app="player"] .player-detail-header__top .eyebrow,
+body[data-app="player"] .player-detail-header h2 {
+  margin-bottom: 0;
+}
+
+body[data-app="player"] .player-detail-header .player-copy {
+  max-width: none;
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+body[data-app="player"] .trivia-player-panel .trivia-status-row {
+  align-items: flex-start;
+}
+
+body[data-app="player"] .trivia-player-panel .trivia-status-badge {
+  margin-top: 2px;
+}
+
+body[data-app="player"] .player-detail-back-link {
+  justify-self: end;
+  font-size: 0.92rem;
+  white-space: nowrap;
+}
+
+body[data-app="player"] .trivia-answer-button {
+  min-height: 72px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+body[data-app="player"] .trivia-answer-button[data-selected="true"] {
+  background: rgba(15, 118, 110, 0.24);
+  border-color: rgba(15, 118, 110, 0.72);
+  color: var(--accent-strong);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.18);
+}
+
+body[data-app="player"] .trivia-answer-button[data-correct="true"] {
+  background: rgba(15, 118, 110, 0.24);
+  border-color: rgba(15, 118, 110, 0.72);
+  color: var(--accent-strong);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.18);
+}
+
+body[data-app="player"] .trivia-answer-button[data-incorrect="true"] {
+  background: rgba(185, 28, 28, 0.18);
+  border-color: rgba(185, 28, 28, 0.42);
+  color: #991b1b;
+}
+
+body[data-app="player"] .bingo-player-panel {
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+body[data-app="player"] .bingo-player-card {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 460px);
+  margin: 0 auto;
+  padding: 18px 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+body[data-app="player"] .bingo-player-card--waiting {
+  min-height: 112px;
+  align-content: center;
+}
+
+body[data-app="player"] .bingo-round-status,
+body[data-app="player"] .bingo-card-loading,
+body[data-app="player"] .bingo-stats-line {
+  margin: 0 auto;
+  width: min(100%, 420px);
+  text-align: center;
+  line-height: 1.45;
+}
+
+body[data-app="player"] .bingo-round-status {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+body[data-app="player"] .bingo-stats-line {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+body[data-app="player"] .bingo-win-pill {
+  justify-self: center;
+}
+
+body[data-app="player"] .bingo-card-grid {
+  width: min(100%, 420px);
+  margin: 0 auto;
+  gap: 8px;
+}
+
+body[data-app="player"] .bingo-card-tile {
+  gap: 6px;
+  min-height: 92px;
+  padding: 10px 8px;
+  border-radius: 14px;
+  justify-content: center;
+  text-align: center;
+  box-shadow: none;
+}
+
+body[data-app="player"] .bingo-card-tile[data-matched="true"] {
+  box-shadow: none;
+}
+
+body[data-app="player"] .bingo-card-tile strong {
+  font-size: clamp(0.84rem, 3vw, 0.98rem);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+body[data-app="player"] .bingo-card-match {
+  justify-self: center;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+}
+
+body[data-app="player"] .player-form-actions--bingo {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(100%, 420px);
+  margin: 0 auto;
+}
+
+body[data-app="player"] .player-form-actions--bingo .primary-button {
+  width: 100%;
+}
+
+body[data-app="player"] .static-page-content {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+body[data-app="player"] .review-link-card {
+  padding: 18px;
+}
+
+body[data-app="player"] .button-link {
+  width: 100%;
+}
+
+body[data-app="player"] .bottle-list-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.display-page {
+  background:
+    radial-gradient(circle at top, rgba(15, 118, 110, 0.18), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(180, 83, 9, 0.14), transparent 24%),
+    linear-gradient(180deg, #f8f3e8 0%, #efe4cf 100%);
+}
+
+.display-page .display-stage {
+  padding: clamp(28px, 3.2vw, 54px);
+}
+
+.display-page .display-stage__content {
+  width: min(100%, 1480px);
+  gap: clamp(24px, 2.6vw, 36px);
+}
+
+.display-page .display-stage--waiting .display-stage__content,
+.display-page .display-stage--announcement .display-stage__content,
+.display-page .display-stage--winner .display-stage__content {
+  align-content: center;
+}
+
+.display-page .display-brand {
+  width: min(100%, 1180px);
+}
+
+.display-page .display-brand--compact {
+  width: min(100%, 1480px);
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 24px;
+}
+
+.display-page .display-brand__logo {
+  filter: drop-shadow(0 14px 28px rgba(31, 24, 13, 0.12));
+}
+
+.display-page .display-hero {
+  width: min(100%, 1120px);
+  gap: 20px;
+}
+
+.display-page .display-panel {
+  width: min(100%, 1480px);
+  padding: clamp(24px, 2.6vw, 34px);
+  border-radius: 32px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.display-page .display-panel--message,
+.display-page .display-panel--spotlight {
+  justify-items: center;
+  text-align: center;
+}
+
+.display-page .display-question {
+  max-width: 32ch;
+  font-size: clamp(1.7rem, 3.2vw, 2.8rem);
+  line-height: 1.2;
+}
+
+.display-page .display-option-list {
+  display: grid;
+  gap: 16px;
+}
+
+.display-page .display-option-list__item {
+  gap: 14px;
+  padding: clamp(18px, 2vw, 24px);
+}
+
+.display-page .display-option-list__copy {
+  font-size: clamp(1.25rem, 2.1vw, 1.85rem);
+}
+
+.display-page .display-bingo-layout {
+  width: min(100%, 1480px);
+  gap: 22px;
+}
+
+.display-page .display-info-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.display-page .display-info-card {
+  min-height: 0;
+  padding: clamp(18px, 2vw, 24px);
+}
+
+.display-page .display-draw-list {
+  gap: 14px;
+}
+
+.display-page .display-draw-list__item {
+  padding: 18px 20px;
+}
+
+.display-page .display-warning-banner {
+  display: none;
+}
+
+@media (min-width: 1100px) {
+  .display-page .display-option-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .display-page .display-brand--compact {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+  }
+
+  .display-page .display-info-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  body[data-app="player"] .bingo-card-grid {
+    gap: 6px;
+  }
+
+  body[data-app="player"] .bingo-card-tile {
+    min-height: 84px;
+    padding: 8px 6px;
+  }
+
+  body[data-app="player"] .bottle-list-table {
+    min-width: 0;
+  }
+
+  body[data-app="player"] .bottle-list-table thead {
+    display: none;
+  }
+
+  body[data-app="player"] .bottle-list-table,
+  body[data-app="player"] .bottle-list-table tbody,
+  body[data-app="player"] .bottle-list-table tr,
+  body[data-app="player"] .bottle-list-table td {
+    display: block;
+    width: 100%;
+  }
+
+  body[data-app="player"] .bottle-list-table tbody {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  body[data-app="player"] .bottle-list-table tr {
+    display: grid;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid rgba(216, 207, 190, 0.84);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.95);
+  }
+
+  body[data-app="player"] .bottle-list-table td {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 12px;
+    padding: 0;
+    border: 0;
+  }
+
+  body[data-app="player"] .bottle-list-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .display-page .display-option-list,
+  .display-page .display-info-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

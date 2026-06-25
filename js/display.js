@@ -158,7 +158,7 @@ function createBrandBlock(eventConfig, { compact = false } = {}) {
   const eyebrowNode = createElement("p", "display-brand__eyebrow");
   const titleNode = createElement(compact ? "h2" : "h1", "display-brand__title");
 
-  eyebrowNode.textContent = "A2Z Event Platform";
+  eyebrowNode.textContent = "A2Z Liquors";
   titleNode.textContent = eventName;
   textWrapNode.append(eyebrowNode, titleNode);
 
@@ -244,19 +244,19 @@ function createTriviaRoundView(round, { revealAnswer = false } = {}) {
   const questionNode = createElement("p", "display-question");
 
   eyebrowNode.textContent = revealAnswer ? "Trivia Reveal" : "Live Trivia";
-  titleNode.textContent = round.question;
+  titleNode.textContent = revealAnswer ? "Answer Reveal" : "Current Question";
   chipRowNode.append(
     createBadge(formatDifficultyLabel(round.difficulty), round.difficulty || "default")
   );
 
   if (round.status === TRIVIA_ROUND_STATUS_LOCKED) {
-    chipRowNode.append(createBadge("Answers are locked.", "locked"));
+    chipRowNode.append(createBadge("Answers are locked", "locked"));
   } else if (!revealAnswer && round.status === TRIVIA_ROUND_STATUS_REVEALED) {
-    chipRowNode.append(createBadge("Answer reveal is held for the display screen.", "revealed"));
+    chipRowNode.append(createBadge("Answer reveal is ready", "revealed"));
   } else if (revealAnswer) {
     chipRowNode.append(createBadge("Correct Answer", "correct"));
   } else if (round.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE) {
-    chipRowNode.append(createBadge("Question is live.", "live"));
+    chipRowNode.append(createBadge("Choose your answer", "live"));
   }
 
   questionNode.textContent = round.question;
@@ -344,7 +344,6 @@ function renderDisplay() {
   const displayState = displayUiState.displayState;
   const screenNode = createElement("section", `display-stage display-stage--${displayState.mode}`);
   const mainWrapNode = createElement("div", "display-stage__content");
-  const warningText = buildWarningText();
 
   if (
     displayState.mode === DISPLAY_MODE_TRIVIA
@@ -358,7 +357,7 @@ function renderDisplay() {
     mainWrapNode.append(
       createBrandBlock(eventConfig),
       createHeroCopy({
-        eyebrow: "Waiting Screen",
+        eyebrow: "Welcome",
         title: displayState.statusMessage || DEFAULT_WAITING_STATUS_MESSAGE,
       })
     );
@@ -394,11 +393,8 @@ function renderDisplay() {
     if (!canRenderTrivia) {
       mainWrapNode.append(createSimpleStatePanel({
         eyebrow: "Trivia",
-        title: "Trivia question unavailable",
-        message: "The selected Trivia round is no longer available on the public display.",
-        secondaryMessage: displayState.triviaRoundId
-          ? `This display command is still bound to Trivia round ${displayState.triviaRoundId}.`
-          : "Switch the display back to Waiting or choose a new Trivia round from Host/Admin.",
+        title: "Waiting for the next Trivia question",
+        message: "The selected Trivia question is not available right now.",
       }));
     } else {
       mainWrapNode.append(createTriviaRoundView(displayUiState.triviaRound, {
@@ -415,11 +411,8 @@ function renderDisplay() {
     if (!canRenderTriviaReveal) {
       mainWrapNode.append(createSimpleStatePanel({
         eyebrow: "Trivia Reveal",
-        title: "Trivia reveal unavailable",
-        message: "The selected Trivia reveal is no longer safe to show on the public display.",
-        secondaryMessage: displayState.triviaRoundId
-          ? `The display is still bound to Trivia round ${displayState.triviaRoundId}.`
-          : "Reveal mode requires an active revealed Trivia round that matches the saved display round binding.",
+        title: "Waiting for the answer reveal",
+        message: "The Trivia reveal is not available right now.",
       }));
     } else {
       mainWrapNode.append(createTriviaRoundView(displayUiState.triviaRound, {
@@ -440,37 +433,23 @@ function renderDisplay() {
         message: "The public display is ready for the next Bingo round.",
       }));
     } else if (bingoRound.status === BINGO_ROUND_STATUS_CARDS_OPEN) {
-      bingoPanelNode.append(
-        createSimpleStatePanel({
-          eyebrow: "Bingo",
-          title: "Bingo cards are open.",
-          message: "Players can still generate and review their Bingo cards.",
-        }),
-        createElement("div", "display-info-grid")
-      );
+      const openPanelNode = createSimpleStatePanel({
+        eyebrow: "Bingo",
+        title: "Bingo cards are open",
+        message: "Players can still generate, review, and shuffle their cards.",
+      });
 
-      const infoGridNode = bingoPanelNode.lastChild;
-
-      infoGridNode.append(
-        createInfoCard("Active Pool", `${bingoRound.actualPoolSize}`),
-        createInfoCard("Target Pool", `${bingoRound.targetPoolSize}`)
-      );
+      openPanelNode.classList.add("display-panel--spotlight");
+      bingoPanelNode.append(openPanelNode);
     } else if (bingoRound.status === BINGO_ROUND_STATUS_CARDS_LOCKED) {
-      bingoPanelNode.append(
-        createSimpleStatePanel({
-          eyebrow: "Bingo",
-          title: "Bingo cards are locked.",
-          message: "Waiting for the round to begin.",
-        }),
-        createElement("div", "display-info-grid")
-      );
+      const lockedPanelNode = createSimpleStatePanel({
+        eyebrow: "Bingo",
+        title: "Bingo cards are locked",
+        message: "Waiting for the round to begin.",
+      });
 
-      const infoGridNode = bingoPanelNode.lastChild;
-
-      infoGridNode.append(
-        createInfoCard("Active Pool", `${bingoRound.actualPoolSize}`),
-        createInfoCard("Draw Count", `${bingoRound.drawCount}`)
-      );
+      lockedPanelNode.classList.add("display-panel--spotlight");
+      bingoPanelNode.append(lockedPanelNode);
     } else if (
       bingoRound.status === BINGO_ROUND_STATUS_IN_PROGRESS
       || bingoRound.status === BINGO_ROUND_STATUS_ENDED
@@ -478,14 +457,16 @@ function renderDisplay() {
       const latestDraw = drawState.lastDraw || bingoRound.lastDraw;
       const infoGridNode = createElement("div", "display-info-grid");
       const recentDraws = drawState.orderedDraws.slice(-RECENT_BINGO_DRAW_COUNT);
-
-      bingoPanelNode.append(createSimpleStatePanel({
+      const spotlightPanelNode = createSimpleStatePanel({
         eyebrow: "Bingo",
         title: latestDraw ? latestDraw.name : "Waiting for the next Bingo call",
         message: bingoRound.status === BINGO_ROUND_STATUS_ENDED
           ? "This Bingo round has ended."
           : "Latest Bingo draw",
-      }));
+      });
+
+      spotlightPanelNode.classList.add("display-panel--spotlight");
+      bingoPanelNode.append(spotlightPanelNode);
 
       infoGridNode.append(
         createInfoCard("Draw Count", `${drawState.drawCount}`),
@@ -493,7 +474,7 @@ function renderDisplay() {
           "Remaining",
           `${Math.max(bingoRound.activePool.length - drawState.drawCount, 0)}`
         ),
-        createInfoCard("Round Status", bingoRound.status === BINGO_ROUND_STATUS_ENDED ? "Ended" : "In Progress")
+        createInfoCard("Status", bingoRound.status === BINGO_ROUND_STATUS_ENDED ? "Ended" : "In Progress")
       );
       bingoPanelNode.append(infoGridNode);
 
@@ -503,13 +484,6 @@ function renderDisplay() {
     }
 
     mainWrapNode.append(bingoPanelNode);
-  }
-
-  if (warningText) {
-    const warningNode = createElement("aside", "display-warning-banner");
-
-    warningNode.textContent = warningText;
-    screenNode.append(warningNode);
   }
 
   screenNode.append(mainWrapNode);

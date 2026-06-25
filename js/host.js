@@ -239,9 +239,11 @@ function createTriviaQuestionCard(
     showHeading = true,
     showId = true,
     showAnswer = true,
+    showDifficultyMeta = true,
     showSelectAction = false,
     isSelected = false,
     selectActionLabel = "Select Question",
+    includePanelChrome = true,
   } = {}
 ) {
   const questionNode = document.createElement("article");
@@ -253,7 +255,7 @@ function createTriviaQuestionCard(
     ? question.correctAnswer
     : question.answer;
 
-  questionNode.className = "hub-panel trivia-question-card";
+  questionNode.className = `${includePanelChrome ? "hub-panel " : ""}trivia-question-card`;
   questionNode.dataset.questionId = question.id;
   questionNode.dataset.selected = isSelected ? "true" : "false";
   headerNode.className = "trivia-question-header";
@@ -269,12 +271,13 @@ function createTriviaQuestionCard(
   }
 
   headerNode.append(badgeNode);
-  questionNode.append(
-    headerNode,
-    createTriviaQuestionMetaRow("Difficulty", question.difficulty),
-    questionCopyNode,
-    createTriviaOptionsList(question)
-  );
+  questionNode.append(headerNode);
+
+  if (showDifficultyMeta) {
+    questionNode.append(createTriviaQuestionMetaRow("Difficulty", question.difficulty));
+  }
+
+  questionNode.append(questionCopyNode, createTriviaOptionsList(question));
 
   if (showAnswer && Number.isInteger(correctAnswerIndex) && question.options[correctAnswerIndex]) {
     const answerNode = document.createElement("p");
@@ -422,6 +425,7 @@ export function initHostPage({ firebase, state, renderStatus }) {
     questionPoolUnavailableMessage: "",
     questionPoolWarning: "",
     activeDifficultyFilter: "all",
+    pushedQuestionIds: new Set(),
     randomPreviewQuestionId: "",
     selectedQuestionId: "",
     activeTab: HOST_DEFAULT_TAB_KEY,
@@ -873,6 +877,62 @@ export function initHostPage({ firebase, state, renderStatus }) {
     return hostUiState.questionPool.orderedQuestions.find(
       (question) => question.id === hostUiState.randomPreviewQuestionId
     ) || null;
+  }
+
+  function getTriviaRandomCandidatePool(
+    difficulty = "all",
+    {
+      excludePushed = true,
+      excludeCurrentRound = true,
+    } = {}
+  ) {
+    const normalizedDifficulty = normalizeHostDifficultyFilter(difficulty);
+    const currentQuestionId = normalizeTextInput(hostUiState.currentRound.questionId);
+    const difficultyQuestions = normalizedDifficulty === "all"
+      ? hostUiState.questionPool.orderedQuestions.slice()
+      : hostUiState.questionPool.orderedQuestions.filter(
+        (question) => question.difficulty === normalizedDifficulty
+      );
+
+    return difficultyQuestions.filter((question) => {
+      if (excludeCurrentRound && currentQuestionId && question.id === currentQuestionId) {
+        return false;
+      }
+
+      if (excludePushed && hostUiState.pushedQuestionIds.has(question.id)) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  function getRandomPreviewQuestionForDifficulty(difficulty = "all") {
+    const preferredCandidates = getTriviaRandomCandidatePool(difficulty, {
+      excludePushed: true,
+      excludeCurrentRound: true,
+    });
+
+    if (preferredCandidates.length > 0) {
+      return getRandomQuestion(preferredCandidates, "all");
+    }
+
+    const nonLiveFallbackCandidates = getTriviaRandomCandidatePool(difficulty, {
+      excludePushed: false,
+      excludeCurrentRound: true,
+    });
+
+    if (nonLiveFallbackCandidates.length > 0) {
+      return getRandomQuestion(nonLiveFallbackCandidates, "all");
+    }
+
+    return getRandomQuestion(
+      getTriviaRandomCandidatePool(difficulty, {
+        excludePushed: false,
+        excludeCurrentRound: false,
+      }),
+      "all"
+    );
   }
 
   function clearAnswerStats(round = hostUiState.currentRound) {
@@ -1396,8 +1456,8 @@ export function initHostPage({ firebase, state, renderStatus }) {
     const eyebrowNode = document.createElement("p");
     const titleNode = document.createElement("h4");
 
-    statsPanelNode.className = "trivia-answer-stats";
-    headerNode.className = "player-section-header";
+    statsPanelNode.className = "host-trivia-live-section host-trivia-answer-stats";
+    headerNode.className = "host-section-heading";
     eyebrowNode.className = "eyebrow";
     eyebrowNode.textContent = "Live Answers";
     titleNode.textContent = "Realtime Totals";
@@ -2242,7 +2302,7 @@ export function initHostPage({ firebase, state, renderStatus }) {
     const previewQuestion = getRandomPreviewQuestion();
     const panelNode = document.createElement("section");
 
-    panelNode.className = "hub-panel host-operator-card";
+    panelNode.className = "hub-panel host-operator-card host-random-preview-card";
     panelNode.append(createHostSectionHeading({
       eyebrow: "Random Preview",
       title: previewQuestion ? "Local Random Pick" : "Ready for Random Pick",
@@ -2262,6 +2322,17 @@ export function initHostPage({ firebase, state, renderStatus }) {
       showHeading: false,
       showId: false,
     }));
+
+    const actionsNode = document.createElement("div");
+    const selectButtonNode = document.createElement("button");
+
+    actionsNode.className = "host-random-preview-actions";
+    selectButtonNode.type = "button";
+    selectButtonNode.className = "primary-button";
+    selectButtonNode.dataset.action = "select-random-preview-trivia";
+    selectButtonNode.textContent = "Select This Question";
+    actionsNode.append(selectButtonNode);
+    panelNode.append(actionsNode);
     previewNode.append(panelNode);
   }
 
@@ -2312,7 +2383,7 @@ export function initHostPage({ firebase, state, renderStatus }) {
     const titleNode = document.createElement("h3");
     const statusBadgeNode = document.createElement("span");
 
-    panelNode.className = "hub-panel host-operator-card";
+    panelNode.className = "host-trivia-live-section";
     headerNode.className = "trivia-status-row";
     eyebrowNode.className = "eyebrow";
     eyebrowNode.textContent = "Current Trivia Round";
@@ -2336,20 +2407,16 @@ export function initHostPage({ firebase, state, renderStatus }) {
       return;
     }
 
-    const statusCopyNode = document.createElement("p");
-
-    statusCopyNode.className = "player-copy";
-    statusCopyNode.textContent = hostUiState.currentRound.status === "revealed"
-      ? "The answer is revealed and the public display can switch to Trivia Reveal."
-      : hostUiState.currentRound.status === "locked"
-        ? "Answers are locked. Reveal when you are ready."
-        : "Answers are still live for players.";
-    panelNode.append(statusCopyNode);
-    panelNode.append(createTriviaQuestionCard(createRoundSnapshotQuestion(hostUiState.currentRound), {
+    const roundQuestionNode = createTriviaQuestionCard(createRoundSnapshotQuestion(hostUiState.currentRound), {
       showHeading: false,
       showId: false,
+      showDifficultyMeta: false,
       showAnswer: hostUiState.currentRound.status === "revealed" || !!hostUiState.currentRound.revealedAt,
-    }));
+      includePanelChrome: false,
+    });
+
+    roundQuestionNode.classList.add("host-trivia-live-question");
+    panelNode.append(roundQuestionNode);
     roundNode.append(panelNode);
   }
 
@@ -2979,6 +3046,9 @@ export function initHostPage({ firebase, state, renderStatus }) {
     const isSelectedQuestionVisible = !!selectedQuestion && filteredTriviaQuestions.some(
       (question) => question.id === selectedQuestion.id
     );
+    const questionPoolTitle = hostUiState.activeDifficultyFilter === "all"
+      ? "Saved Questions"
+      : `${formatTriviaDifficultyLabel(hostUiState.activeDifficultyFilter)} Questions`;
 
     hostUiState.activeTab = activeTab;
 
@@ -3041,9 +3111,9 @@ export function initHostPage({ firebase, state, renderStatus }) {
           <div class="host-panel-stack">
             <div data-host-live-notices></div>
             <div class="host-action-row" data-host-live-actions></div>
-            <div class="host-operator-workspace">
-              <div class="host-operator-main">
-                <section class="hub-panel host-operator-card">
+            <div class="host-operator-workspace host-trivia-top-row">
+              <div class="host-operator-main host-trivia-main">
+                <section class="hub-panel host-operator-card host-trivia-selector-card">
                   <div class="host-section-heading">
                     <p class="eyebrow">Trivia Operator</p>
                     <h3>Question Selector</h3>
@@ -3082,7 +3152,6 @@ export function initHostPage({ firebase, state, renderStatus }) {
                     </label>
                   </div>
                   <div data-host-trivia-counts></div>
-                  <div data-host-trivia-status></div>
                   <div class="trivia-toolbar trivia-random-actions host-toolbar-row host-random-button-row" role="toolbar" aria-label="Random trivia preview">
                     ${["easy", "medium", "hard"].map((difficulty) => `
                       <button
@@ -3097,14 +3166,23 @@ export function initHostPage({ firebase, state, renderStatus }) {
                     `).join("")}
                   </div>
                   <div data-host-random-preview></div>
-                  <div data-host-trivia-questions></div>
                 </section>
               </div>
-              <aside class="host-operator-side">
-                <div data-host-current-round></div>
-                <div data-host-answer-stats></div>
+              <aside class="host-operator-side host-trivia-side">
+                <section class="hub-panel host-operator-card host-trivia-live-panel">
+                  <div data-host-current-round></div>
+                  <div data-host-answer-stats></div>
+                </section>
               </aside>
             </div>
+            <section class="hub-panel host-operator-card host-trivia-pool-card">
+              <div class="host-section-heading">
+                <p class="eyebrow">Question Pool</p>
+                <h3>${escapeHtml(questionPoolTitle)}</h3>
+              </div>
+              <div data-host-trivia-status></div>
+              <div data-host-trivia-questions></div>
+            </section>
           </div>
         </section>
 
@@ -3604,6 +3682,8 @@ export function initHostPage({ firebase, state, renderStatus }) {
       renderHostTriviaController();
       return;
     }
+
+    hostUiState.pushedQuestionIds.add(latestSelectedQuestion.id);
 
     const didDisplayAutoFollow = await syncHostDisplayToTriviaRound(nextRoundPayload.roundId);
 
@@ -4313,12 +4393,28 @@ export function initHostPage({ firebase, state, renderStatus }) {
       }
 
       if (action === "preview-random-trivia") {
-        const randomQuestion = getRandomQuestion(
-          hostUiState.questionPool.orderedQuestions,
+        const randomQuestion = getRandomPreviewQuestionForDifficulty(
           actionNode.dataset.difficulty || "all"
         );
 
         hostUiState.randomPreviewQuestionId = randomQuestion?.id || "";
+        renderHostTriviaController();
+        return;
+      }
+
+      if (action === "select-random-preview-trivia") {
+        const previewQuestion = getRandomPreviewQuestion();
+
+        if (!previewQuestion) {
+          hostUiState.randomPreviewQuestionId = "";
+          setControllerMessage("The random preview is no longer available. Pick another random question.", "warning");
+          renderHostTriviaController();
+          return;
+        }
+
+        hostUiState.activeDifficultyFilter = normalizeHostDifficultyFilter(previewQuestion.difficulty);
+        hostUiState.selectedQuestionId = previewQuestion.id;
+        setControllerMessage();
         renderHostTriviaController();
         return;
       }

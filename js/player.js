@@ -58,19 +58,41 @@ import {
   REVIEW_LINK_DEFINITIONS,
   STATIC_PAGE_DEFINITIONS,
   hasStaticPageContent,
+  normalizeMultilineText,
   normalizeReviewLinks,
   normalizeStaticPages,
 } from "./static-pages.js";
 
 const PLAYER_ROOT_SELECTOR = "#player-app";
 const PLAYER_BINGO_WAITING_MESSAGE = "Waiting for the next Bingo round...";
-const PLAYER_BRAND_EYEBROW = "A2ZEventHubV0.2";
+const PLAYER_BRAND_EYEBROW = "A2Z Event Hub";
 const PLAYER_FALLBACK_EVENT_TITLE = "The Allocated Affair XV";
 const PLAYER_EVENT_TITLE_PLACEHOLDERS = new Set([
   "a2z event",
   "a2z event engine demo",
   "a2z liquors event",
 ]);
+const PLAYER_WELLER_RAINBOW_URL = "https://tinyurl.com/a2z-nia-fundraiser";
+const PLAYER_LOCAL_STATIC_PAGE_DEFINITIONS = {
+  "earn-more-entries": {
+    title: "Earn More Entries",
+    content: [
+      "MORE WAYS TO ENTER TODAY",
+      "",
+      "## 🥃 Corazón Store Pick",
+      "Golden Vault + Players Vault",
+      "",
+      "## ❤️ Nia’s Fundraiser",
+      "Golden Vault + Players Vault",
+      "",
+      "## 🎮 Trivia & Bingo",
+      "Earn Players Vault Entries",
+      "",
+      "## 🛍 Supporting A2Z During The Event",
+      "Additional Grand Vault Opportunities",
+    ].join("\n"),
+  },
+};
 
 let unsubscribePagesListener = null;
 let unsubscribeReviewLinksListener = null;
@@ -117,6 +139,22 @@ const HUB_PANELS = [
     pageKey: pageDefinition.key,
   })),
   {
+    id: "earn-more-entries",
+    label: "🎟️ Earn More Entries",
+    title: PLAYER_LOCAL_STATIC_PAGE_DEFINITIONS["earn-more-entries"].title,
+    message: "See a few more ways to build entries during the event.",
+    kind: "local-static-page",
+    pageKey: "earn-more-entries",
+  },
+  {
+    id: "weller-rainbow",
+    label: "🌈 Win The Weller Rainbow",
+    title: "Win The Weller Rainbow",
+    message: "Open the fundraiser page in a new tab.",
+    kind: "external-link",
+    href: PLAYER_WELLER_RAINBOW_URL,
+  },
+  {
     id: "leave-review",
     label: "Leave Review",
     title: "Leave Review",
@@ -132,13 +170,17 @@ const VISIBLE_HUB_PANEL_IDS = [
   "faq",
   "rules-alerts",
   "event-schedule",
+  "earn-more-entries",
+  "weller-rainbow",
   "leave-review",
 ];
 
 const HUB_PANEL_LABEL_OVERRIDES = {
-  "bottle-list": "Vault",
-  "rules-alerts": "Rules",
+  "bottle-list": "Bourbon Vault",
+  "rules-alerts": "House Rules",
+  "leave-review": "⭐ Rate Your Experience",
 };
+const HUB_FULL_WIDTH_PANEL_IDS = new Set(["earn-more-entries", "weller-rainbow", "leave-review"]);
 
 const DEFAULT_HUB_PANEL_ID = HUB_PANELS[0].id;
 
@@ -165,7 +207,7 @@ function getPlayerCheckInSummary(currentPlayer) {
 }
 
 function getPlayerHubWelcomeMessage(eventName) {
-  return `Welcome to ${eventName}. Use this hub for Trivia, Bingo, bottle list, reviews, and event details.`;
+  return `Welcome to ${eventName}. Use this hub for Trivia, Bingo, Bourbon Vault, reviews, and event details.`;
 }
 
 function sanitizeZipInput(value) {
@@ -324,8 +366,16 @@ function isStaticPagePanel(panel) {
   return panel?.kind === "static-page";
 }
 
+function isLocalStaticPagePanel(panel) {
+  return panel?.kind === "local-static-page";
+}
+
 function isReviewLinksPanel(panel) {
   return panel?.kind === "review-links";
+}
+
+function isExternalLinkPanel(panel) {
+  return panel?.kind === "external-link";
 }
 
 function isBottleListPanel(panel) {
@@ -344,8 +394,21 @@ function shouldOpenHubDetailPanel(panel) {
   return isTriviaPanel(panel)
     || isBingoPanel(panel)
     || isStaticPagePanel(panel)
+    || isLocalStaticPagePanel(panel)
     || isReviewLinksPanel(panel)
     || isBottleListPanel(panel);
+}
+
+function getHubPanelSpan(panel) {
+  return HUB_FULL_WIDTH_PANEL_IDS.has(panel?.id) ? "full" : "half";
+}
+
+function getLocalStaticPage(panel) {
+  if (!panel?.pageKey) {
+    return null;
+  }
+
+  return PLAYER_LOCAL_STATIC_PAGE_DEFINITIONS[panel.pageKey] || null;
 }
 
 function renderPlayerMessage(playerMessage) {
@@ -366,7 +429,7 @@ function renderAgeGate(eventName) {
       <p class="eyebrow">${PLAYER_BRAND_EYEBROW}</p>
       <h2>${escapeHtml(eventName)}</h2>
       <p class="player-kicker">Guest Check-In</p>
-      <p class="player-copy">Please confirm that you are 21 or older before continuing to event check-in.</p>
+      <p class="player-copy">We're really glad you're here — but first, a quick age check.</p>
       <div class="player-action-stack">
         <button type="button" class="primary-button" data-action="accept-age-gate">I Am 21+</button>
         <button type="button" class="secondary-button" data-action="decline-age-gate">I Am Under 21</button>
@@ -497,9 +560,7 @@ function renderStaticPageDetail(eventName) {
         eventName,
         titleDataAttribute: "data-static-page-title",
       })}
-      <div class="hub-panel static-page-panel">
-        <p class="static-page-content" data-static-page-content></p>
-      </div>
+      <div class="static-page-panel" data-static-page-content></div>
     </section>
   `;
 }
@@ -509,8 +570,8 @@ function renderReviewDetail(eventName) {
     <section class="player-section">
       ${renderPlayerDetailHeader({
         eventName,
-        title: "Leave Review",
-        helperCopy: "Choose a review option below.",
+        title: "Share Your Experience",
+        helperCopy: "Thank you for celebrating with us. We’d love to hear your feedback.",
       })}
       <div class="review-links-grid" data-review-actions></div>
     </section>
@@ -540,6 +601,197 @@ function createPlayerNotice(message, tone) {
   noticeNode.dataset.tone = tone;
   noticeNode.textContent = message;
   return noticeNode;
+}
+
+function stripMarkdownHeading(line) {
+  const headingMatch = String(line ?? "").match(/^\s{0,3}(#{1,3})\s+(.+?)\s*$/);
+
+  if (!headingMatch) {
+    return "";
+  }
+
+  return normalizeTextInput(headingMatch[2].replace(/\*\*/g, "").replace(/:\s*$/, ""));
+}
+
+function isStaticPageSeparator(line) {
+  return /^\s*-{3,}\s*$/.test(String(line ?? ""));
+}
+
+function isStaticPageTitleLikeLine(line) {
+  const normalizedLine = normalizeTextInput(String(line ?? "").replace(/\*\*/g, ""));
+
+  if (!normalizedLine || normalizedLine.length > 64) {
+    return false;
+  }
+
+  if (/^\d{1,2}(:\d{2})?\s?(am|pm)\b/i.test(normalizedLine)) {
+    return true;
+  }
+
+  if (/^every\b/i.test(normalizedLine)) {
+    return true;
+  }
+
+  return /^[A-Za-z0-9][A-Za-z0-9 '&/().-]{0,63}:$/.test(normalizedLine);
+}
+
+function normalizeStaticPageTitle(line) {
+  return normalizeTextInput(String(line ?? "").replace(/\*\*/g, "").replace(/:\s*$/, ""));
+}
+
+function buildStaticPageSections(contentText) {
+  const contentLines = normalizeMultilineText(contentText).split("\n");
+  const sections = [];
+  let currentSection = {
+    title: "",
+    paragraphs: [],
+  };
+  let currentParagraphLines = [];
+
+  function flushParagraph() {
+    if (currentParagraphLines.length === 0) {
+      return;
+    }
+
+    currentSection.paragraphs.push(currentParagraphLines.join("\n"));
+    currentParagraphLines = [];
+  }
+
+  function commitSection() {
+    flushParagraph();
+
+    if (!currentSection.title && currentSection.paragraphs.length === 0) {
+      return;
+    }
+
+    sections.push(currentSection);
+    currentSection = {
+      title: "",
+      paragraphs: [],
+    };
+  }
+
+  contentLines.forEach((line) => {
+    const trimmedLine = String(line ?? "").trim();
+    const headingText = stripMarkdownHeading(line);
+
+    if (headingText) {
+      commitSection();
+      currentSection.title = headingText;
+      return;
+    }
+
+    if (isStaticPageSeparator(line)) {
+      commitSection();
+      return;
+    }
+
+    if (!trimmedLine) {
+      flushParagraph();
+      return;
+    }
+
+    if (isStaticPageTitleLikeLine(trimmedLine) && currentParagraphLines.length === 0) {
+      if (currentSection.title || currentSection.paragraphs.length > 0) {
+        commitSection();
+      }
+
+      currentSection.title = normalizeStaticPageTitle(trimmedLine);
+      return;
+    }
+
+    currentParagraphLines.push(trimmedLine);
+  });
+
+  commitSection();
+  return sections;
+}
+
+function appendStaticPageInlineContent(parentNode, text) {
+  const normalizedText = String(text ?? "");
+  const boldPattern = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  let match = boldPattern.exec(normalizedText);
+
+  while (match) {
+    const plainText = normalizedText.slice(lastIndex, match.index).replace(/\*\*/g, "");
+
+    if (plainText) {
+      parentNode.append(document.createTextNode(plainText));
+    }
+
+    const strongNode = document.createElement("strong");
+
+    strongNode.textContent = match[1].replace(/\*\*/g, "");
+    parentNode.append(strongNode);
+    lastIndex = match.index + match[0].length;
+    match = boldPattern.exec(normalizedText);
+  }
+
+  const trailingText = normalizedText.slice(lastIndex).replace(/\*\*/g, "");
+
+  if (trailingText) {
+    parentNode.append(document.createTextNode(trailingText));
+  }
+}
+
+function createStaticPageParagraph(paragraphText) {
+  const paragraphNode = document.createElement("p");
+  const paragraphLines = normalizeMultilineText(paragraphText).split("\n");
+
+  paragraphNode.className = "static-page-card__body";
+
+  paragraphLines.forEach((line, lineIndex) => {
+    appendStaticPageInlineContent(paragraphNode, line);
+
+    if (lineIndex < paragraphLines.length - 1) {
+      paragraphNode.append(document.createElement("br"));
+    }
+  });
+
+  return paragraphNode;
+}
+
+function renderStaticPageContent(contentNode, pageContent) {
+  if (!contentNode) {
+    return;
+  }
+
+  contentNode.replaceChildren();
+
+  const sections = buildStaticPageSections(pageContent);
+
+  if (sections.length === 0) {
+    const fallbackCardNode = document.createElement("article");
+    const fallbackParagraphNode = document.createElement("p");
+
+    fallbackCardNode.className = "static-page-card";
+    fallbackParagraphNode.className = "static-page-card__body";
+    fallbackParagraphNode.textContent = MISSING_STATIC_PAGE_MESSAGE;
+    fallbackCardNode.append(fallbackParagraphNode);
+    contentNode.append(fallbackCardNode);
+    return;
+  }
+
+  sections.forEach((section) => {
+    const cardNode = document.createElement("article");
+
+    cardNode.className = "static-page-card";
+
+    if (section.title) {
+      const titleNode = document.createElement("h3");
+
+      titleNode.className = "static-page-card__title";
+      titleNode.textContent = section.title;
+      cardNode.append(titleNode);
+    }
+
+    section.paragraphs.forEach((paragraphText) => {
+      cardNode.append(createStaticPageParagraph(paragraphText));
+    });
+
+    contentNode.append(cardNode);
+  });
 }
 
 function renderBottleListGroups(groupsNode, bottleList) {
@@ -660,18 +912,37 @@ function renderHub(playerState, playerUiState) {
   const activePanel = getHubPanel(currentState.activeHubPanel);
   const eventName = getPlayerEventTitle(currentState.eventConfig);
   const hubButtonsMarkup = getVisibleHubPanels()
-    .map((panel) => `
-      <button
-        type="button"
-        class="hub-button"
-        data-action="open-hub-panel"
-        data-panel-id="${panel.id}"
-        data-hub-span="${panel.id === "leave-review" ? "full" : "half"}"
-        aria-pressed="${panel.id === activePanel.id ? "true" : "false"}"
-      >
-        <span class="hub-button__title">${escapeHtml(getHubPanelLabel(panel))}</span>
-      </button>
-    `)
+    .map((panel) => {
+      const label = escapeHtml(getHubPanelLabel(panel));
+      const hubSpan = getHubPanelSpan(panel);
+
+      if (isExternalLinkPanel(panel)) {
+        return `
+          <a
+            class="hub-button"
+            data-hub-span="${hubSpan}"
+            href="${escapeHtml(panel.href || PLAYER_WELLER_RAINBOW_URL)}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span class="hub-button__title">${label}</span>
+          </a>
+        `;
+      }
+
+      return `
+        <button
+          type="button"
+          class="hub-button"
+          data-action="open-hub-panel"
+          data-panel-id="${panel.id}"
+          data-hub-span="${hubSpan}"
+          aria-pressed="${panel.id === activePanel.id ? "true" : "false"}"
+        >
+          <span class="hub-button__title">${label}</span>
+        </button>
+      `;
+    })
     .join("");
 
   if (playerUiState.isViewingHubDetail && isTriviaPanel(activePanel)) {
@@ -682,7 +953,7 @@ function renderHub(playerState, playerUiState) {
     return renderBingoDetail(eventName);
   }
 
-  if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
+  if (playerUiState.isViewingHubDetail && (isStaticPagePanel(activePanel) || isLocalStaticPagePanel(activePanel))) {
     return renderStaticPageDetail(eventName);
   }
 
@@ -698,7 +969,7 @@ function renderHub(playerState, playerUiState) {
     <section class="player-section">
       <div class="player-detail-header player-hub-header">
         <div class="player-detail-header__top">
-          <p class="eyebrow">Event Hub</p>
+          <p class="eyebrow">${PLAYER_BRAND_EYEBROW}</p>
           <button type="button" class="text-link-button player-detail-back-link" data-action="edit-check-in">Edit Check-In</button>
         </div>
         <h2>${escapeHtml(eventName)}</h2>
@@ -1088,19 +1359,24 @@ function populateDynamicHubContent({ playerRoot, state, playerUiState }) {
     renderPlayerBingoDetailContent(playerRoot, playerUiState);
   }
 
-  if (playerUiState.isViewingHubDetail && isStaticPagePanel(activePanel)) {
-    const staticPage = playerUiState.staticPages[activePanel.pageKey];
+  if (playerUiState.isViewingHubDetail && (isStaticPagePanel(activePanel) || isLocalStaticPagePanel(activePanel))) {
+    const staticPage = isLocalStaticPagePanel(activePanel)
+      ? getLocalStaticPage(activePanel)
+      : playerUiState.staticPages[activePanel.pageKey];
     const titleNode = playerRoot.querySelector("[data-static-page-title]");
     const contentNode = playerRoot.querySelector("[data-static-page-content]");
 
     if (titleNode) {
-      titleNode.textContent = staticPage.title;
+      titleNode.textContent = staticPage?.title || activePanel.title || "";
     }
 
     if (contentNode) {
-      contentNode.textContent = hasStaticPageContent(staticPage)
-        ? staticPage.content
-        : MISSING_STATIC_PAGE_MESSAGE;
+      renderStaticPageContent(
+        contentNode,
+        isLocalStaticPagePanel(activePanel)
+          ? staticPage?.content || MISSING_STATIC_PAGE_MESSAGE
+          : hasStaticPageContent(staticPage) ? staticPage.content : MISSING_STATIC_PAGE_MESSAGE
+      );
     }
   }
 

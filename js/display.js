@@ -7,7 +7,12 @@ import {
   hasPreparedBingoRound,
   normalizeBingoCurrentRound,
 } from "./bingo-pool.js";
-import { getBingoRoundDrawsPath, normalizeBingoRoundDraws } from "./bingo-live.js";
+import {
+  getBingoRoundDrawsPath,
+  getBingoRoundWinnersPath,
+  normalizeBingoRoundDraws,
+  normalizeBingoWinnerRecords,
+} from "./bingo-live.js";
 import {
   DEFAULT_WAITING_STATUS_MESSAGE,
   DISPLAY_MODE_ANNOUNCEMENT,
@@ -27,14 +32,18 @@ import {
   TRIVIA_ROUND_STATUS_LOCKED,
   TRIVIA_ROUND_STATUS_QUESTION_LIVE,
   TRIVIA_ROUND_STATUS_REVEALED,
+  getTriviaRoundAnswersPath,
   hasActiveTriviaRound,
+  normalizeTriviaAnswerRecord,
   normalizeTriviaCurrentRound,
 } from "./trivia-live.js";
-import { isValidAbsoluteHttpUrl, normalizeTextInput } from "./utils.js";
+import { getPreferredName, isValidAbsoluteHttpUrl, normalizeTextInput } from "./utils.js";
 
 const DISPLAY_ROOT_SELECTOR = "#display-app";
 const CONFIG_PATH = "config";
-const RECENT_BINGO_DRAW_COUNT = 5;
+const PLAYERS_PATH = "players";
+const DISPLAY_MAX_VISIBLE_TRIVIA_NAMES = 12;
+const DISPLAY_MAX_VISIBLE_BINGO_WINNERS = 12;
 
 let activeDisplayRoot = null;
 let unsubscribeDisplayStateListener = null;
@@ -42,6 +51,9 @@ let unsubscribeConfigListener = null;
 let unsubscribeTriviaRoundListener = null;
 let unsubscribeBingoRoundListener = null;
 let unsubscribeBingoDrawsListener = null;
+let unsubscribeTriviaAnswersListener = null;
+let unsubscribeBingoWinnersListener = null;
+let unsubscribePlayersListener = null;
 let hasBoundDisplayBeforeUnload = false;
 let displayUiState = null;
 
@@ -64,6 +76,17 @@ function createEmptyDisplayUiState(eventConfig = null) {
     hasLoadedBingoDraws: false,
     bingoDrawsWarning: "",
     activeBingoDrawsRoundId: "",
+    triviaAnswersValue: null,
+    hasLoadedTriviaAnswers: false,
+    triviaAnswersWarning: "",
+    activeTriviaAnswersRoundId: "",
+    bingoWinnersValue: null,
+    hasLoadedBingoWinners: false,
+    bingoWinnersWarning: "",
+    activeBingoWinnersRoundId: "",
+    playersValue: null,
+    hasLoadedPlayers: false,
+    playersWarning: "",
   };
 }
 
@@ -88,14 +111,31 @@ function cleanupDisplayPageRuntime() {
     unsubscribeBingoDrawsListener();
   }
 
+  if (typeof unsubscribeTriviaAnswersListener === "function") {
+    unsubscribeTriviaAnswersListener();
+  }
+
+  if (typeof unsubscribeBingoWinnersListener === "function") {
+    unsubscribeBingoWinnersListener();
+  }
+
+  if (typeof unsubscribePlayersListener === "function") {
+    unsubscribePlayersListener();
+  }
+
   unsubscribeDisplayStateListener = null;
   unsubscribeConfigListener = null;
   unsubscribeTriviaRoundListener = null;
   unsubscribeBingoRoundListener = null;
   unsubscribeBingoDrawsListener = null;
+  unsubscribeTriviaAnswersListener = null;
+  unsubscribeBingoWinnersListener = null;
+  unsubscribePlayersListener = null;
 
   if (displayUiState) {
     displayUiState.activeBingoDrawsRoundId = "";
+    displayUiState.activeTriviaAnswersRoundId = "";
+    displayUiState.activeBingoWinnersRoundId = "";
   }
 
   activeDisplayRoot = null;
@@ -145,6 +185,22 @@ function createInfoCard(label, value) {
   labelNode.textContent = label;
   cardNode.append(valueNode, labelNode);
   return cardNode;
+}
+
+function formatCountLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function getPublicDisplayName(fullName) {
+  return getPreferredName(fullName);
+}
+
+function getPlayerNameFromRoster(playerId) {
+  if (!displayUiState?.playersValue || typeof displayUiState.playersValue !== "object" || Array.isArray(displayUiState.playersValue)) {
+    return "";
+  }
+
+  return normalizeTextInput(displayUiState.playersValue[playerId]?.name);
 }
 
 function createBrandBlock(eventConfig, { compact = false } = {}) {
@@ -235,8 +291,160 @@ function createTriviaOptionsList(round, { highlightCorrect = false } = {}) {
   return listNode;
 }
 
-function createTriviaRoundView(round, { revealAnswer = false } = {}) {
+function getVisibleItemsWithOverflow(items, limit) {
+  const safeItems = Array.isArray(items) ? items.slice() : [];
+
+  return {
+    visibleItems: safeItems.slice(0, limit),
+    hiddenCount: Math.max(safeItems.length - limit, 0),
+  };
+}
+
+function getTriviaCorrectAnswerNames(answerRecordsValue, round) {
+  const normalizedRound = normalizeTriviaCurrentRound(round);
+
+  if (
+    !normalizedRound.isValid
+    || !hasActiveTriviaRound(normalizedRound)
+    || !Number.isInteger(normalizedRound.correctAnswer)
+  ) {
+    return [];
+  }
+
+  const correctNames = [];
+
+  if (answerRecordsValue && typeof answerRecordsValue === "object" && !Array.isArray(answerRecordsValue)) {
+    Object.entries(answerRecordsValue).forEach(([playerIdKey, answerValue]) => {
+      const normalizedAnswer = normalizeTriviaAnswerRecord(answerValue, {
+        roundId: normalizedRound.roundId,
+        playerId: playerIdKey,
+      });
+
+      if (!normalizedAnswer.isValid || normalizedAnswer.roundId !== normalizedRound.roundId) {
+        return;
+      }
+
+      if (normalizedAnswer.answer !== normalizedRound.correctAnswer) {
+        return;
+      }
+
+      const playerName = getPlayerNameFromRoster(normalizedAnswer.playerId);
+
+      if (!playerName) {
+        return;
+      }
+
+      correctNames.push(getPublicDisplayName(playerName));
+    });
+  }
+
+  return correctNames.sort((leftName, rightName) => leftName.localeCompare(rightName));
+}
+
+function createResultsBoardEntry({
+  name,
+  meta = "",
+  summary = false,
+  highlight = false,
+} = {}) {
+  const cardNode = createElement("article", "display-results-card");
+  const nameNode = createElement("strong", "display-results-card__name");
+
+  if (summary) {
+    cardNode.classList.add("display-results-card--summary");
+  }
+
+  if (highlight) {
+    cardNode.classList.add("display-results-card--highlight");
+  }
+
+  nameNode.textContent = name;
+  cardNode.append(nameNode);
+
+  if (meta) {
+    const metaNode = createElement("span", "display-results-card__meta");
+
+    metaNode.textContent = meta;
+    cardNode.append(metaNode);
+  }
+
+  return cardNode;
+}
+
+function createResultsBoard({
+  eyebrow,
+  title,
+  entries = [],
+  emptyMessage,
+  overflowLimit,
+  blackoutNames = [],
+} = {}) {
+  const panelNode = createElement("section", "display-panel display-results-board");
+  const headerNode = createElement("div", "display-panel__header");
+  const eyebrowNode = createElement("p", "display-panel__eyebrow");
+  const titleNode = createElement("h3", "display-results-board__title");
+  const gridNode = createElement("div", "display-results-grid");
+  const { visibleItems, hiddenCount } = getVisibleItemsWithOverflow(entries, overflowLimit);
+
+  eyebrowNode.textContent = eyebrow;
+  titleNode.textContent = title;
+  headerNode.append(eyebrowNode, titleNode);
+  panelNode.append(headerNode);
+
+  if (blackoutNames.length > 0) {
+    const blackoutNode = createElement("div", "display-results-blackout");
+    const blackoutLabelNode = createElement("span", "display-results-blackout__label");
+    const blackoutNamesNode = createElement("div", "display-results-blackout__names");
+
+    blackoutLabelNode.textContent = "BLACKOUT";
+    blackoutNames.forEach((name) => {
+      const nameNode = createElement("span", "display-results-blackout__name");
+
+      nameNode.textContent = name;
+      blackoutNamesNode.append(nameNode);
+    });
+
+    blackoutNode.append(blackoutLabelNode, blackoutNamesNode);
+    panelNode.append(blackoutNode);
+  }
+
+  if (entries.length === 0) {
+    const emptyCopyNode = createElement("p", "display-results-empty");
+
+    emptyCopyNode.textContent = emptyMessage;
+    panelNode.append(emptyCopyNode);
+    return panelNode;
+  }
+
+  visibleItems.forEach((entry) => {
+    gridNode.append(createResultsBoardEntry(entry));
+  });
+
+  if (hiddenCount > 0) {
+    gridNode.append(createResultsBoardEntry({
+      name: `+${hiddenCount} more`,
+      summary: true,
+    }));
+  }
+
+  panelNode.append(gridNode);
+  return panelNode;
+}
+
+function createTriviaCorrectAnswersBoard(correctNames) {
+  return createResultsBoard({
+    eyebrow: "Trivia Results",
+    title: "Correct Answers",
+    entries: correctNames.map((name) => ({ name })),
+    emptyMessage: "No correct answers yet",
+    overflowLimit: DISPLAY_MAX_VISIBLE_TRIVIA_NAMES,
+  });
+}
+
+function createTriviaRoundView(round, { revealAnswer = false, correctAnswerNames = [] } = {}) {
+  const stackNode = createElement("div", "display-trivia-stack");
   const panelNode = createElement("section", "display-panel display-panel--trivia");
+  const mainColumnNode = createElement("div", "display-trivia-main");
   const headerNode = createElement("div", "display-panel__header");
   const eyebrowNode = createElement("p", "display-panel__eyebrow");
   const titleNode = createElement("h2", "display-panel__title");
@@ -261,10 +469,21 @@ function createTriviaRoundView(round, { revealAnswer = false } = {}) {
 
   questionNode.textContent = round.question;
   headerNode.append(eyebrowNode, titleNode, chipRowNode);
-  panelNode.append(headerNode, questionNode, createTriviaOptionsList(round, {
-    highlightCorrect: revealAnswer,
-  }));
-  return panelNode;
+  mainColumnNode.append(
+    headerNode,
+    questionNode,
+    createTriviaOptionsList(round, {
+      highlightCorrect: revealAnswer,
+    })
+  );
+  panelNode.append(mainColumnNode);
+  stackNode.append(panelNode);
+
+  if (revealAnswer) {
+    stackNode.append(createTriviaCorrectAnswersBoard(correctAnswerNames));
+  }
+
+  return stackNode;
 }
 
 function createSimpleStatePanel({ eyebrow, title, message, secondaryMessage = "" } = {}) {
@@ -279,28 +498,84 @@ function createSimpleStatePanel({ eyebrow, title, message, secondaryMessage = ""
   return panelNode;
 }
 
-function createBingoDrawList(orderedDraws) {
-  const panelNode = createElement("section", "display-panel display-panel--bingo-history");
+function createBingoSpotlightPanel({ latestDrawName, isEnded = false } = {}) {
+  const panelNode = createElement("section", "display-panel display-panel--spotlight display-panel--bingo-spotlight");
   const eyebrowNode = createElement("p", "display-panel__eyebrow");
-  const titleNode = createElement("h3", "display-panel__title");
-  const listNode = createElement("ol", "display-draw-list");
+  const titleNode = createElement("h2", "display-bingo-spotlight__name");
+  const statusText = isEnded
+    ? "Round ended."
+    : latestDrawName
+      ? ""
+      : "Waiting for the first Bingo call.";
 
-  eyebrowNode.textContent = "Recent Draws";
-  titleNode.textContent = "Latest Bingo Calls";
+  eyebrowNode.textContent = "Latest Draw";
+  titleNode.textContent = latestDrawName || "Waiting for the first Bingo call";
+  panelNode.append(eyebrowNode, titleNode);
 
-  orderedDraws.forEach((drawRecord) => {
-    const itemNode = createElement("li", "display-draw-list__item");
-    const sequenceNode = createElement("strong", "display-draw-list__sequence");
-    const copyNode = createElement("span", "display-draw-list__copy");
+  if (statusText) {
+    const statusNode = createElement("p", "display-bingo-spotlight__status");
 
-    sequenceNode.textContent = `${drawRecord.sequence}`;
-    copyNode.textContent = drawRecord.name;
-    itemNode.append(sequenceNode, copyNode);
-    listNode.append(itemNode);
-  });
+    statusNode.textContent = statusText;
+    panelNode.append(statusNode);
+  }
 
-  panelNode.append(eyebrowNode, titleNode, listNode);
   return panelNode;
+}
+
+function getPublicBingoWinnerRows(winnersValue, round) {
+  const winnerState = normalizeBingoWinnerRecords(winnersValue, round);
+
+  return winnerState.winnerRecords
+    .filter((winnerRecord) => winnerRecord.blackoutWinner === true || winnerRecord.lineWinner === true)
+    .map((winnerRecord) => ({
+      playerName: getPublicDisplayName(winnerRecord.playerName),
+      lineCount: Array.isArray(winnerRecord.completedLines) ? winnerRecord.completedLines.length : 0,
+      blackoutWinner: winnerRecord.blackoutWinner === true,
+    }))
+    .sort((leftWinner, rightWinner) => {
+      if (leftWinner.blackoutWinner !== rightWinner.blackoutWinner) {
+        return leftWinner.blackoutWinner ? -1 : 1;
+      }
+
+      if (leftWinner.lineCount !== rightWinner.lineCount) {
+        return rightWinner.lineCount - leftWinner.lineCount;
+      }
+
+      return leftWinner.playerName.localeCompare(rightWinner.playerName);
+    });
+}
+
+function createBingoWinnersPanel(winnerRows) {
+  const blackoutWinners = winnerRows.filter((winnerRow) => winnerRow.blackoutWinner === true);
+
+  return createResultsBoard({
+    eyebrow: "Bingo Results",
+    title: "Line Leaders",
+    entries: winnerRows.map((winnerRow) => ({
+      name: winnerRow.playerName,
+      meta: formatCountLabel(winnerRow.lineCount, "line"),
+      highlight: winnerRow.blackoutWinner,
+    })),
+    emptyMessage: "No line winners yet",
+    overflowLimit: DISPLAY_MAX_VISIBLE_BINGO_WINNERS,
+    blackoutNames: blackoutWinners.map((winnerRow) => winnerRow.playerName),
+  });
+  if (blackoutWinners.length > 0) {
+    const blackoutNode = createElement("div", "display-bingo-blackout");
+    const blackoutLabelNode = createElement("span", "display-bingo-blackout__label");
+    const blackoutNamesNode = createElement("div", "display-bingo-blackout__names");
+
+    blackoutLabelNode.textContent = "Blackout";
+    blackoutWinners.forEach((winnerRow) => {
+      const nameNode = createElement("span", "display-bingo-blackout__name");
+
+      nameNode.textContent = `${winnerRow.playerName} • ${formatCountLabel(winnerRow.lineCount, "line")}`;
+      blackoutNamesNode.append(nameNode);
+    });
+    blackoutNode.append(blackoutLabelNode, blackoutNamesNode);
+    panelNode.append(blackoutNode);
+  }
+
 }
 
 function buildWarningText() {
@@ -310,6 +585,9 @@ function buildWarningText() {
     displayUiState?.triviaRoundWarning,
     displayUiState?.bingoRoundWarning,
     displayUiState?.bingoDrawsWarning,
+    displayUiState?.triviaAnswersWarning,
+    displayUiState?.bingoWinnersWarning,
+    displayUiState?.playersWarning,
   ].filter(Boolean);
 
   return warningTexts.join(" ");
@@ -332,6 +610,46 @@ function detachBingoDrawsListener({ clearState = true } = {}) {
     displayUiState.bingoDrawsValue = null;
     displayUiState.hasLoadedBingoDraws = false;
     displayUiState.bingoDrawsWarning = "";
+  }
+}
+
+function detachTriviaAnswersListener({ clearState = true } = {}) {
+  if (typeof unsubscribeTriviaAnswersListener === "function") {
+    unsubscribeTriviaAnswersListener();
+  }
+
+  unsubscribeTriviaAnswersListener = null;
+
+  if (!displayUiState) {
+    return;
+  }
+
+  displayUiState.activeTriviaAnswersRoundId = "";
+
+  if (clearState) {
+    displayUiState.triviaAnswersValue = null;
+    displayUiState.hasLoadedTriviaAnswers = false;
+    displayUiState.triviaAnswersWarning = "";
+  }
+}
+
+function detachBingoWinnersListener({ clearState = true } = {}) {
+  if (typeof unsubscribeBingoWinnersListener === "function") {
+    unsubscribeBingoWinnersListener();
+  }
+
+  unsubscribeBingoWinnersListener = null;
+
+  if (!displayUiState) {
+    return;
+  }
+
+  displayUiState.activeBingoWinnersRoundId = "";
+
+  if (clearState) {
+    displayUiState.bingoWinnersValue = null;
+    displayUiState.hasLoadedBingoWinners = false;
+    displayUiState.bingoWinnersWarning = "";
   }
 }
 
@@ -397,8 +715,13 @@ function renderDisplay() {
         message: "The selected Trivia question is not available right now.",
       }));
     } else {
+      const revealAnswer = displayUiState.triviaRound.status === TRIVIA_ROUND_STATUS_REVEALED;
+
       mainWrapNode.append(createTriviaRoundView(displayUiState.triviaRound, {
-        revealAnswer: displayUiState.triviaRound.status === TRIVIA_ROUND_STATUS_REVEALED,
+        revealAnswer,
+        correctAnswerNames: revealAnswer
+          ? getTriviaCorrectAnswerNames(displayUiState.triviaAnswersValue, displayUiState.triviaRound)
+          : [],
       }));
     }
   }
@@ -417,6 +740,10 @@ function renderDisplay() {
     } else {
       mainWrapNode.append(createTriviaRoundView(displayUiState.triviaRound, {
         revealAnswer: true,
+        correctAnswerNames: getTriviaCorrectAnswerNames(
+          displayUiState.triviaAnswersValue,
+          displayUiState.triviaRound
+        ),
       }));
     }
   }
@@ -436,7 +763,7 @@ function renderDisplay() {
       const openPanelNode = createSimpleStatePanel({
         eyebrow: "Bingo",
         title: "Bingo cards are open",
-        message: "Players can still generate, review, and shuffle their cards.",
+        message: "Get your card ready.",
       });
 
       openPanelNode.classList.add("display-panel--spotlight");
@@ -445,7 +772,7 @@ function renderDisplay() {
       const lockedPanelNode = createSimpleStatePanel({
         eyebrow: "Bingo",
         title: "Bingo cards are locked",
-        message: "Waiting for the round to begin.",
+        message: "Bingo is about to begin.",
       });
 
       lockedPanelNode.classList.add("display-panel--spotlight");
@@ -455,32 +782,15 @@ function renderDisplay() {
       || bingoRound.status === BINGO_ROUND_STATUS_ENDED
     ) {
       const latestDraw = drawState.lastDraw || bingoRound.lastDraw;
-      const infoGridNode = createElement("div", "display-info-grid");
-      const recentDraws = drawState.orderedDraws.slice(-RECENT_BINGO_DRAW_COUNT);
-      const spotlightPanelNode = createSimpleStatePanel({
-        eyebrow: "Bingo",
-        title: latestDraw ? latestDraw.name : "Waiting for the next Bingo call",
-        message: bingoRound.status === BINGO_ROUND_STATUS_ENDED
-          ? "This Bingo round has ended."
-          : "Latest Bingo draw",
+      const winnerRows = getPublicBingoWinnerRows(displayUiState.bingoWinnersValue, bingoRound);
+      const spotlightPanelNode = createBingoSpotlightPanel({
+        latestDrawName: latestDraw?.name || "",
+        isEnded: bingoRound.status === BINGO_ROUND_STATUS_ENDED,
       });
 
       spotlightPanelNode.classList.add("display-panel--spotlight");
       bingoPanelNode.append(spotlightPanelNode);
-
-      infoGridNode.append(
-        createInfoCard("Draw Count", `${drawState.drawCount}`),
-        createInfoCard(
-          "Remaining",
-          `${Math.max(bingoRound.activePool.length - drawState.drawCount, 0)}`
-        ),
-        createInfoCard("Status", bingoRound.status === BINGO_ROUND_STATUS_ENDED ? "Ended" : "In Progress")
-      );
-      bingoPanelNode.append(infoGridNode);
-
-      if (recentDraws.length > 0) {
-        bingoPanelNode.append(createBingoDrawList(recentDraws));
-      }
+      bingoPanelNode.append(createBingoWinnersPanel(winnerRows));
     }
 
     mainWrapNode.append(bingoPanelNode);
@@ -535,6 +845,106 @@ function syncBingoDrawsListener(firebase) {
       displayUiState.bingoDrawsValue = drawsValue;
       displayUiState.hasLoadedBingoDraws = true;
       displayUiState.bingoDrawsWarning = "";
+      renderDisplay();
+    }
+  );
+}
+
+function syncTriviaAnswersListener(firebase) {
+  if (!displayUiState) {
+    return;
+  }
+
+  const triviaRound = normalizeTriviaCurrentRound(displayUiState.triviaRound);
+
+  if (!hasActiveTriviaRound(triviaRound) || !triviaRound.roundId) {
+    detachTriviaAnswersListener({ clearState: true });
+    renderDisplay();
+    return;
+  }
+
+  if (
+    displayUiState.activeTriviaAnswersRoundId === triviaRound.roundId
+    && typeof unsubscribeTriviaAnswersListener === "function"
+  ) {
+    return;
+  }
+
+  detachTriviaAnswersListener({ clearState: true });
+  displayUiState.activeTriviaAnswersRoundId = triviaRound.roundId;
+
+  unsubscribeTriviaAnswersListener = firebase.listenEventData(
+    getTriviaRoundAnswersPath(triviaRound.roundId),
+    (answersValue, listenerStatus) => {
+      if (!displayUiState || displayUiState.activeTriviaAnswersRoundId !== triviaRound.roundId) {
+        return;
+      }
+
+      if (!listenerStatus.ok) {
+        if (displayUiState.hasLoadedTriviaAnswers) {
+          displayUiState.triviaAnswersWarning = "Correct-answer name updates are temporarily unavailable. Showing the last loaded names.";
+        } else {
+          displayUiState.triviaAnswersValue = null;
+          displayUiState.triviaAnswersWarning = "Correct-answer names are temporarily unavailable right now.";
+        }
+
+        renderDisplay();
+        return;
+      }
+
+      displayUiState.triviaAnswersValue = answersValue;
+      displayUiState.hasLoadedTriviaAnswers = true;
+      displayUiState.triviaAnswersWarning = "";
+      renderDisplay();
+    }
+  );
+}
+
+function syncBingoWinnersListener(firebase) {
+  if (!displayUiState) {
+    return;
+  }
+
+  const bingoRound = normalizeBingoCurrentRound(displayUiState.bingoRound);
+
+  if (!hasPreparedBingoRound(bingoRound) || !bingoRound.roundId) {
+    detachBingoWinnersListener({ clearState: true });
+    renderDisplay();
+    return;
+  }
+
+  if (
+    displayUiState.activeBingoWinnersRoundId === bingoRound.roundId
+    && typeof unsubscribeBingoWinnersListener === "function"
+  ) {
+    return;
+  }
+
+  detachBingoWinnersListener({ clearState: true });
+  displayUiState.activeBingoWinnersRoundId = bingoRound.roundId;
+
+  unsubscribeBingoWinnersListener = firebase.listenEventData(
+    getBingoRoundWinnersPath(bingoRound.roundId),
+    (winnersValue, listenerStatus) => {
+      if (!displayUiState || displayUiState.activeBingoWinnersRoundId !== bingoRound.roundId) {
+        return;
+      }
+
+      if (!listenerStatus.ok) {
+        if (displayUiState.hasLoadedBingoWinners) {
+          displayUiState.bingoWinnersWarning = "Bingo winner updates are temporarily unavailable. Showing the last loaded winners.";
+        } else {
+          displayUiState.bingoWinnersValue = null;
+          displayUiState.bingoWinnersWarning = "Bingo winners are temporarily unavailable right now.";
+        }
+
+        renderDisplay();
+        return;
+      }
+
+      displayUiState.bingoWinnersValue = winnersValue;
+      displayUiState.hasLoadedBingoWinners = true;
+      displayUiState.bingoWinnersWarning = "";
       renderDisplay();
     }
   );
@@ -618,6 +1028,29 @@ export function initDisplayPage({ firebase, state, renderStatus }) {
     renderDisplay();
   });
 
+  unsubscribePlayersListener = firebase.listenEventData(PLAYERS_PATH, (playersValue, listenerStatus) => {
+    if (!displayUiState) {
+      return;
+    }
+
+    if (!listenerStatus.ok) {
+      if (displayUiState.hasLoadedPlayers) {
+        displayUiState.playersWarning = "Player name updates are temporarily unavailable. Showing the last loaded public names.";
+      } else {
+        displayUiState.playersValue = null;
+        displayUiState.playersWarning = "Player names are temporarily unavailable right now.";
+      }
+
+      renderDisplay();
+      return;
+    }
+
+    displayUiState.playersValue = playersValue;
+    displayUiState.hasLoadedPlayers = true;
+    displayUiState.playersWarning = "";
+    renderDisplay();
+  });
+
   unsubscribeTriviaRoundListener = firebase.listenEventData(TRIVIA_CURRENT_ROUND_PATH, (roundValue, listenerStatus) => {
     if (!displayUiState) {
       return;
@@ -629,6 +1062,7 @@ export function initDisplayPage({ firebase, state, renderStatus }) {
       } else {
         displayUiState.triviaRound = normalizeTriviaCurrentRound(null);
         displayUiState.triviaRoundWarning = "Live Trivia round updates are temporarily unavailable right now.";
+        detachTriviaAnswersListener({ clearState: true });
       }
 
       renderDisplay();
@@ -641,8 +1075,10 @@ export function initDisplayPage({ firebase, state, renderStatus }) {
 
     if (!normalizedRound.isValid || !hasActiveTriviaRound(normalizedRound)) {
       displayUiState.triviaRound = normalizeTriviaCurrentRound(null);
+      detachTriviaAnswersListener({ clearState: true });
     } else {
       displayUiState.triviaRound = normalizedRound;
+      syncTriviaAnswersListener(firebase);
     }
 
     displayUiState.triviaRoundWarning = normalizedRound.isValid
@@ -679,17 +1115,20 @@ export function initDisplayPage({ firebase, state, renderStatus }) {
       displayUiState.bingoRound = normalizeBingoCurrentRound(null);
       displayUiState.bingoRoundWarning = "The current Bingo round is invalid, so the public display is showing the safe Bingo waiting state.";
       detachBingoDrawsListener({ clearState: true });
+      detachBingoWinnersListener({ clearState: true });
       renderDisplay();
       return;
     }
 
     if (didRoundChange || !hasPreparedBingoRound(normalizedRound)) {
       detachBingoDrawsListener({ clearState: true });
+      detachBingoWinnersListener({ clearState: true });
     }
 
     displayUiState.bingoRound = normalizedRound;
     displayUiState.bingoRoundWarning = "";
     syncBingoDrawsListener(firebase);
+    syncBingoWinnersListener(firebase);
     renderDisplay();
   });
 

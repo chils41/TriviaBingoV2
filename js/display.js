@@ -29,8 +29,6 @@ import {
 } from "./display-state.js";
 import {
   TRIVIA_CURRENT_ROUND_PATH,
-  TRIVIA_ROUND_STATUS_LOCKED,
-  TRIVIA_ROUND_STATUS_QUESTION_LIVE,
   TRIVIA_ROUND_STATUS_REVEALED,
   getTriviaRoundAnswersPath,
   hasActiveTriviaRound,
@@ -44,6 +42,13 @@ const CONFIG_PATH = "config";
 const PLAYERS_PATH = "players";
 const DISPLAY_MAX_VISIBLE_TRIVIA_NAMES = 12;
 const DISPLAY_MAX_VISIBLE_BINGO_WINNERS = 12;
+const DISPLAY_BRAND_EYEBROW = "A2Z EVENT HUB";
+const DISPLAY_FALLBACK_EVENT_TITLE = "The Allocated Affair XV";
+const DISPLAY_EVENT_TITLE_PLACEHOLDERS = new Set([
+  "a2z event",
+  "a2z event engine demo",
+  "a2z liquors event",
+]);
 
 let activeDisplayRoot = null;
 let unsubscribeDisplayStateListener = null;
@@ -145,16 +150,6 @@ function handleDisplayBeforeUnload() {
   cleanupDisplayPageRuntime();
 }
 
-function formatDifficultyLabel(difficultyValue) {
-  const normalizedDifficulty = normalizeTextInput(difficultyValue);
-
-  if (!normalizedDifficulty) {
-    return "Trivia";
-  }
-
-  return normalizedDifficulty.charAt(0).toUpperCase() + normalizedDifficulty.slice(1);
-}
-
 function createElement(tagName, className = "") {
   const node = document.createElement(tagName);
 
@@ -163,17 +158,6 @@ function createElement(tagName, className = "") {
   }
 
   return node;
-}
-
-function createBadge(label, dataValue = "") {
-  const badgeNode = createElement("span", "display-chip");
-
-  if (dataValue) {
-    badgeNode.dataset.displayChip = dataValue;
-  }
-
-  badgeNode.textContent = label;
-  return badgeNode;
 }
 
 function createInfoCard(label, value) {
@@ -203,18 +187,32 @@ function getPlayerNameFromRoster(playerId) {
   return normalizeTextInput(displayUiState.playersValue[playerId]?.name);
 }
 
+function getDisplayEventTitle(eventConfig) {
+  const configuredEventTitle = normalizeTextInput(eventConfig?.eventName);
+
+  if (!configuredEventTitle) {
+    return DISPLAY_FALLBACK_EVENT_TITLE;
+  }
+
+  if (DISPLAY_EVENT_TITLE_PLACEHOLDERS.has(configuredEventTitle.toLowerCase())) {
+    return DISPLAY_FALLBACK_EVENT_TITLE;
+  }
+
+  return configuredEventTitle;
+}
+
 function createBrandBlock(eventConfig, { compact = false } = {}) {
   const brandNode = createElement(
     "header",
     compact ? "display-brand display-brand--compact" : "display-brand"
   );
   const logoUrl = normalizeTextInput(eventConfig?.eventLogoUrl);
-  const eventName = normalizeTextInput(eventConfig?.eventName) || "A2Z Event";
+  const eventName = getDisplayEventTitle(eventConfig);
   const textWrapNode = createElement("div", "display-brand__copy");
   const eyebrowNode = createElement("p", "display-brand__eyebrow");
   const titleNode = createElement(compact ? "h2" : "h1", "display-brand__title");
 
-  eyebrowNode.textContent = "A2Z Liquors";
+  eyebrowNode.textContent = DISPLAY_BRAND_EYEBROW;
   titleNode.textContent = eventName;
   textWrapNode.append(eyebrowNode, titleNode);
 
@@ -277,13 +275,6 @@ function createTriviaOptionsList(round, { highlightCorrect = false } = {}) {
     numberNode.textContent = `${optionIndex + 1}.`;
     copyNode.textContent = optionValue;
     optionNode.append(numberNode, copyNode);
-
-    if (shouldHighlight) {
-      const markerNode = createBadge("Correct Answer", "correct");
-
-      markerNode.classList.add("display-option-list__badge");
-      optionNode.append(markerNode);
-    }
 
     listNode.append(optionNode);
   });
@@ -448,27 +439,12 @@ function createTriviaRoundView(round, { revealAnswer = false, correctAnswerNames
   const headerNode = createElement("div", "display-panel__header");
   const eyebrowNode = createElement("p", "display-panel__eyebrow");
   const titleNode = createElement("h2", "display-panel__title");
-  const chipRowNode = createElement("div", "display-chip-row");
   const questionNode = createElement("p", "display-question");
 
   eyebrowNode.textContent = revealAnswer ? "Trivia Reveal" : "Live Trivia";
   titleNode.textContent = revealAnswer ? "Answer Reveal" : "Current Question";
-  chipRowNode.append(
-    createBadge(formatDifficultyLabel(round.difficulty), round.difficulty || "default")
-  );
-
-  if (round.status === TRIVIA_ROUND_STATUS_LOCKED) {
-    chipRowNode.append(createBadge("Answers are locked", "locked"));
-  } else if (!revealAnswer && round.status === TRIVIA_ROUND_STATUS_REVEALED) {
-    chipRowNode.append(createBadge("Answer reveal is ready", "revealed"));
-  } else if (revealAnswer) {
-    chipRowNode.append(createBadge("Correct Answer", "correct"));
-  } else if (round.status === TRIVIA_ROUND_STATUS_QUESTION_LIVE) {
-    chipRowNode.append(createBadge("Choose your answer", "live"));
-  }
-
   questionNode.textContent = round.question;
-  headerNode.append(eyebrowNode, titleNode, chipRowNode);
+  headerNode.append(eyebrowNode, titleNode);
   mainColumnNode.append(
     headerNode,
     questionNode,

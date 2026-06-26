@@ -66,6 +66,7 @@ import {
 const PLAYER_ROOT_SELECTOR = "#player-app";
 const PLAYER_BINGO_WAITING_MESSAGE = "Waiting for the next Bingo round...";
 const PLAYER_BRAND_EYEBROW = "A2Z Event Hub";
+const PLAYER_HUB_ROUTE_ID = "hub";
 const PLAYER_FALLBACK_EVENT_TITLE = "The Allocated Affair XV";
 const PLAYER_EVENT_TITLE_PLACEHOLDERS = new Set([
   "a2z event",
@@ -106,6 +107,7 @@ let activePlayerRoot = null;
 let activePlayerClickHandler = null;
 let activePlayerInputHandler = null;
 let activePlayerSubmitHandler = null;
+let activePlayerPopStateHandler = null;
 let hasBoundPlayerBeforeUnload = false;
 
 const HUB_PANELS = [
@@ -174,6 +176,7 @@ const VISIBLE_HUB_PANEL_IDS = [
   "weller-rainbow",
   "leave-review",
 ];
+const PLAYER_HASH_ROUTE_PANEL_IDS = new Set(VISIBLE_HUB_PANEL_IDS.filter((panelId) => panelId !== "weller-rainbow"));
 
 const HUB_PANEL_LABEL_OVERRIDES = {
   "bottle-list": "Bourbon Vault",
@@ -196,6 +199,41 @@ function getPlayerEventTitle(eventConfig) {
   }
 
   return configuredEventTitle;
+}
+
+function normalizePlayerRouteId(routeId) {
+  const normalizedRouteId = normalizeTextInput(routeId).toLowerCase();
+
+  if (!normalizedRouteId || normalizedRouteId === PLAYER_HUB_ROUTE_ID) {
+    return PLAYER_HUB_ROUTE_ID;
+  }
+
+  return PLAYER_HASH_ROUTE_PANEL_IDS.has(normalizedRouteId)
+    ? normalizedRouteId
+    : PLAYER_HUB_ROUTE_ID;
+}
+
+function isPlayerPanelRouteId(routeId) {
+  return PLAYER_HASH_ROUTE_PANEL_IDS.has(normalizePlayerRouteId(routeId));
+}
+
+function getPlayerRouteIdFromHash(hashValue = window.location.hash) {
+  return normalizePlayerRouteId(String(hashValue ?? "").replace(/^#/, ""));
+}
+
+function buildPlayerRouteHash(routeId) {
+  return `#${normalizePlayerRouteId(routeId)}`;
+}
+
+function createPlayerHistoryState(routeId) {
+  return {
+    playerApp: true,
+    routeId: normalizePlayerRouteId(routeId),
+  };
+}
+
+function isPlayerHistoryState(historyState) {
+  return Boolean(historyState?.playerApp && typeof historyState?.routeId === "string");
 }
 
 function getPlayerCheckInSummary(currentPlayer) {
@@ -322,10 +360,15 @@ function cleanupPlayerPageRuntime() {
     activePlayerRoot.removeEventListener("submit", activePlayerSubmitHandler);
   }
 
+  if (activePlayerPopStateHandler) {
+    window.removeEventListener("popstate", activePlayerPopStateHandler);
+  }
+
   activePlayerRoot = null;
   activePlayerClickHandler = null;
   activePlayerInputHandler = null;
   activePlayerSubmitHandler = null;
+  activePlayerPopStateHandler = null;
 }
 
 function handlePlayerBeforeUnload() {
@@ -1480,6 +1523,109 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     playerUiState.bingoActionMessage = { text, tone };
   }
 
+  function replacePlayerHistoryRoute(routeId) {
+    const normalizedRouteId = normalizePlayerRouteId(routeId);
+    const nextHash = buildPlayerRouteHash(normalizedRouteId);
+    const currentHistoryState = window.history.state;
+
+    if (
+      window.location.hash === nextHash
+      && isPlayerHistoryState(currentHistoryState)
+      && normalizePlayerRouteId(currentHistoryState.routeId) === normalizedRouteId
+    ) {
+      return;
+    }
+
+    window.history.replaceState(createPlayerHistoryState(normalizedRouteId), "", nextHash);
+  }
+
+  function pushPlayerHistoryRoute(routeId) {
+    const normalizedRouteId = normalizePlayerRouteId(routeId);
+    const nextHash = buildPlayerRouteHash(normalizedRouteId);
+    const currentHistoryState = window.history.state;
+
+    if (
+      window.location.hash === nextHash
+      && isPlayerHistoryState(currentHistoryState)
+      && normalizePlayerRouteId(currentHistoryState.routeId) === normalizedRouteId
+    ) {
+      return;
+    }
+
+    window.history.pushState(createPlayerHistoryState(normalizedRouteId), "", nextHash);
+  }
+
+  function applyPlayerHubRoute({ render = true } = {}) {
+    playerUiState.isEditingCheckIn = false;
+    playerUiState.isViewingHubDetail = false;
+    state.patch({ activeHubPanel: DEFAULT_HUB_PANEL_ID });
+    detachPlayerBingoDetailListeners({ clearState: true, resetGuard: true });
+    setBingoActionMessage();
+
+    if (render) {
+      renderPlayerView();
+    }
+  }
+
+  function applyPlayerPanelRoute(panelOrPanelId, { render = true } = {}) {
+    const nextPanel = getHubPanel(typeof panelOrPanelId === "string" ? panelOrPanelId : panelOrPanelId?.id);
+
+    playerUiState.isEditingCheckIn = false;
+    playerUiState.isViewingHubDetail = shouldOpenHubDetailPanel(nextPanel);
+    state.patch({ activeHubPanel: nextPanel.id });
+    syncPlayerBingoCardListener(playerUiState.bingoRound);
+    syncPlayerBingoDrawListener(playerUiState.bingoRound);
+
+    if (render) {
+      renderPlayerView();
+    }
+  }
+
+  function isCurrentPlayerManagedPanelHistoryEntry() {
+    const routeIdFromHash = getPlayerRouteIdFromHash();
+    const currentHistoryState = window.history.state;
+
+    return isPlayerPanelRouteId(routeIdFromHash)
+      && isPlayerHistoryState(currentHistoryState)
+      && normalizePlayerRouteId(currentHistoryState.routeId) === routeIdFromHash;
+  }
+
+  function initializePlayerHistoryToHub({ render = false } = {}) {
+    replacePlayerHistoryRoute(PLAYER_HUB_ROUTE_ID);
+    applyPlayerHubRoute({ render });
+  }
+
+  function initializePlayerHistoryFromCurrentHash({ render = false } = {}) {
+    const nextRouteId = getPlayerRouteIdFromHash();
+
+    if (isPlayerPanelRouteId(nextRouteId)) {
+      replacePlayerHistoryRoute(PLAYER_HUB_ROUTE_ID);
+      pushPlayerHistoryRoute(nextRouteId);
+      applyPlayerPanelRoute(nextRouteId, { render });
+      return;
+    }
+
+    initializePlayerHistoryToHub({ render });
+  }
+
+  function handlePlayerBrowserPopState() {
+    const currentPlayer = state.getState().currentPlayer;
+    const nextRouteId = getPlayerRouteIdFromHash();
+
+    if (!currentPlayer) {
+      applyPlayerHubRoute();
+      return;
+    }
+
+    if (isPlayerPanelRouteId(nextRouteId)) {
+      applyPlayerPanelRoute(nextRouteId);
+      return;
+    }
+
+    replacePlayerHistoryRoute(PLAYER_HUB_ROUTE_ID);
+    applyPlayerHubRoute();
+  }
+
   function getActiveTriviaPlayerId() {
     const currentState = state.getState();
     return currentState.deviceId || currentState.currentPlayer?.playerId || getOrCreateDeviceId();
@@ -2100,13 +2246,13 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     state.patch({ deviceId });
 
     if (!firebase.getStatus().isConnected) {
-      return;
+      return false;
     }
 
     const existingPlayerRecord = await firebase.readEventData(getPlayerRecordPath(deviceId));
 
     if (!existingPlayerRecord || typeof existingPlayerRecord !== "object") {
-      return;
+      return false;
     }
 
     state.patch({
@@ -2118,6 +2264,8 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
       hasPassedAgeGate: true,
       activeHubPanel: state.getState().activeHubPanel || DEFAULT_HUB_PANEL_ID,
     });
+
+    return true;
   }
 
   function getCheckInValidationMessage({ name, zip, email }) {
@@ -2349,20 +2497,19 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
     if (action === "open-hub-panel") {
       const nextPanel = getHubPanel(actionNode.dataset.panelId || DEFAULT_HUB_PANEL_ID);
 
-      playerUiState.isViewingHubDetail = shouldOpenHubDetailPanel(nextPanel);
-      state.patch({ activeHubPanel: nextPanel.id });
-      syncPlayerBingoCardListener(playerUiState.bingoRound);
-      syncPlayerBingoDrawListener(playerUiState.bingoRound);
-      renderPlayerView();
+      replacePlayerHistoryRoute(PLAYER_HUB_ROUTE_ID);
+      pushPlayerHistoryRoute(nextPanel.id);
+      applyPlayerPanelRoute(nextPanel);
       return;
     }
 
     if (action === "back-to-hub") {
-      playerUiState.isViewingHubDetail = false;
-      state.patch({ activeHubPanel: DEFAULT_HUB_PANEL_ID });
-      detachPlayerBingoDetailListeners({ clearState: true, resetGuard: true });
-      setBingoActionMessage();
-      renderPlayerView();
+      if (isCurrentPlayerManagedPanelHistoryEntry()) {
+        window.history.back();
+      } else {
+        initializePlayerHistoryToHub({ render: true });
+      }
+
       return;
     }
 
@@ -2470,7 +2617,7 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
 
     playerUiState.ageGateDeclined = false;
     playerUiState.isEditingCheckIn = false;
-    playerUiState.isViewingHubDetail = false;
+    initializePlayerHistoryToHub({ render: false });
     setPlayerMessage();
     renderPlayerView();
   };
@@ -2479,6 +2626,8 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   playerRoot.addEventListener("input", activePlayerInputHandler);
   playerRoot.addEventListener("submit", activePlayerSubmitHandler);
   activePlayerRoot = playerRoot;
+  activePlayerPopStateHandler = handlePlayerBrowserPopState;
+  window.addEventListener("popstate", activePlayerPopStateHandler);
 
   attachRealtimeContentListeners();
   attachPlayerTriviaRoundListener();
@@ -2486,7 +2635,11 @@ export async function initPlayerPage({ firebase, state, renderStatus }) {
   renderPlayerView();
 
   const restorePlayerPromise = restoreExistingPlayer()
-    .then(() => {
+    .then((didRestorePlayer) => {
+      if (didRestorePlayer) {
+        initializePlayerHistoryFromCurrentHash({ render: false });
+      }
+
       renderPlayerView();
     })
     .catch(() => {

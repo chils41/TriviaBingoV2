@@ -2254,19 +2254,24 @@ body[data-app="player"] .bottle-list-table-wrap {
 
 .display-page .display-option-list {
   display: grid;
-  gap: 18px;
+  gap: 14px;
 }
 
 .display-page .display-option-list__item {
-  grid-template-columns: auto 1fr auto;
-  gap: 14px;
-  padding: clamp(18px, 2vw, 26px);
-  align-items: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  padding: clamp(14px, 1.5vw, 18px);
+  align-items: center;
+}
+
+.display-page .display-option-list__number {
+  font-size: clamp(0.92rem, 1.1vw, 1.02rem);
 }
 
 .display-page .display-option-list__copy {
-  font-size: clamp(1.45rem, 2.15vw, 2.15rem);
-  line-height: 1.22;
+  font-size: clamp(1.32rem, 1.9vw, 1.88rem);
+  line-height: 1.18;
 }
 
 .display-page .display-bingo-layout {
